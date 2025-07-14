@@ -1,0 +1,35 @@
+name: SonarQube
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  build:
+    name: Build and analyze
+    runs-on: ubuntu-24.04
+    env:
+      BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory # Directory where build-wrapper output will be placed
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
+      - uses: cachix/install-nix-action@v31
+        with:
+          install_url: "https://releases.nixos.org/nix/nix-2.29.1/install"
+      - run: nix --experimental-features 'nix-command flakes' flake show --all-systems --json
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Install Build Wrapper
+        uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v5
+      - name: Run Build Wrapper
+        run: |
+          nix develop -c 'build-wrapper-linux-x86-64 --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} genericBuild'
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            --define sonar.cfamily.compile-commands="${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json"

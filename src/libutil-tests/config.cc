@@ -305,6 +305,121 @@ TEST(Config, applyConfigWithReassignedSetting)
     ASSERT_EQ(settings["name-of-the-setting"].value, "second-value");
 }
 
+/* RAII guard that enables a set of experimental features on the global
+   `experimentalFeatureSettings` for the duration of a test, restoring the
+   previous set on destruction. */
+struct WithExperimentalFeatures
+{
+    std::set<ExperimentalFeature> prev;
+
+    WithExperimentalFeatures(std::set<ExperimentalFeature> features)
+        : prev(experimentalFeatureSettings.experimentalFeatures.get())
+    {
+        experimentalFeatureSettings.experimentalFeatures.assign(std::move(features));
+    }
+
+    ~WithExperimentalFeatures()
+    {
+        experimentalFeatureSettings.experimentalFeatures.assign(prev);
+    }
+};
+
+/* Without `deterministic-config-merge`, an `extra-` append that appears before
+   its base assignment is discarded by the later plain assignment (historical
+   behaviour). */
+TEST(Config, applyConfigExtraBeforeBaseLegacy)
+{
+    WithExperimentalFeatures noFeatures{{}};
+    Config config;
+    std::map<std::string, Config::SettingInfo> settings;
+    Setting<Strings> setting{&config, {}, "list-setting", "description"};
+    config.applyConfig(
+        "extra-list-setting = b\n"
+        "list-setting = a\n");
+    config.getSettings(settings);
+    ASSERT_EQ(settings["list-setting"].value, "a");
+}
+
+/* With `deterministic-config-merge`, an `extra-` append lands on top of the
+   base value regardless of whether it appears before or after the base
+   assignment within the same source. */
+TEST(Config, applyConfigExtraBeforeBaseDeterministic)
+{
+    WithExperimentalFeatures features{{Xp::DeterministicConfigMerge}};
+    Config config;
+    std::map<std::string, Config::SettingInfo> settings;
+    Setting<Strings> setting{&config, {}, "list-setting", "description"};
+    config.applyConfig(
+        "extra-list-setting = b\n"
+        "list-setting = a\n");
+    config.getSettings(settings);
+    ASSERT_EQ(settings["list-setting"].value, "a b");
+}
+
+/* An `extra-` append that appears after its base assignment appends without
+   the feature. */
+TEST(Config, applyConfigExtraAfterBaseAppends)
+{
+    WithExperimentalFeatures noFeatures{{}};
+    Config config;
+    std::map<std::string, Config::SettingInfo> settings;
+    Setting<Strings> setting{&config, {}, "list-setting", "description"};
+    config.applyConfig(
+        "list-setting = a\n"
+        "extra-list-setting = b\n");
+    config.getSettings(settings);
+    ASSERT_EQ(settings["list-setting"].value, "a b");
+}
+
+/* A setting whose own name starts with `extra-` must be treated as an
+   assignment to itself, not as an append to a `<rest>` setting. Its append
+   form is then `extra-extra-<rest>`, and the reordering must still make that
+   order-independent. */
+TEST(Config, applyConfigDeterministicExtraPrefixedSetting)
+{
+    WithExperimentalFeatures features{{Xp::DeterministicConfigMerge}};
+    Config config;
+    std::map<std::string, Config::SettingInfo> settings;
+    Setting<Strings> setting{&config, {}, "extra-thing", "description"};
+    config.applyConfig(
+        "extra-extra-thing = b\n"
+        "extra-thing = a\n");
+    config.getSettings(settings);
+    ASSERT_EQ(settings["extra-thing"].value, "a b");
+}
+
+/* The feature must not regress the extra-after-base case, which already
+   appends without it. */
+TEST(Config, applyConfigExtraAfterBaseAppendsDeterministic)
+{
+    WithExperimentalFeatures features{{Xp::DeterministicConfigMerge}};
+    Config config;
+    std::map<std::string, Config::SettingInfo> settings;
+    Setting<Strings> setting{&config, {}, "list-setting", "description"};
+    config.applyConfig(
+        "list-setting = a\n"
+        "extra-list-setting = b\n");
+    config.getSettings(settings);
+    ASSERT_EQ(settings["list-setting"].value, "a b");
+}
+
+/* With the feature, a later plain assignment still wins over an earlier plain
+   assignment (last-writer-wins is preserved), while `extra-` appends land on
+   top of the winning base value: `X=A; extra-X=B; X=C` yields `C B`. */
+TEST(Config, applyConfigDeterministicReassignThenAppend)
+{
+    WithExperimentalFeatures features{{Xp::DeterministicConfigMerge}};
+    Config config;
+    std::map<std::string, Config::SettingInfo> settings;
+    Setting<Strings> setting{&config, {}, "list-setting", "description"};
+    config.applyConfig(
+        "list-setting = a\n"
+        "extra-list-setting = b\n"
+        "list-setting = c\n");
+    config.getSettings(settings);
+    ASSERT_EQ(settings["list-setting"].value, "c b");
+}
+
 TEST(Config, applyConfigFailsOnMissingIncludes)
 {
     Config config;

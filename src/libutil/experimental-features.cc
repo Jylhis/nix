@@ -27,7 +27,7 @@ void MissingExperimentalFeature::anchor() {}
  * feature, we either have no issue at all if few features are not added
  * at the end of the list, or a proper merge conflict if they are.
  */
-constexpr size_t numXpFeatures = 1 + static_cast<size_t>(Xp::BLAKE3Hashes);
+constexpr size_t numXpFeatures = 1 + static_cast<size_t>(Xp::DeterministicConfigMerge);
 
 constexpr std::array<ExperimentalFeatureDetails, numXpFeatures> xpFeatureDetails = {{
     {
@@ -280,6 +280,21 @@ constexpr std::array<ExperimentalFeatureDetails, numXpFeatures> xpFeatureDetails
             Enables support for BLAKE3 hashes.
         )",
         .trackingUrl = "https://github.com/NixOS/nix/milestone/60",
+    },
+    {
+        .tag = Xp::DeterministicConfigMerge,
+        .name = "deterministic-config-merge",
+        .description = R"(
+            Apply configuration settings order-independently within a source:
+            all plain `<name> = ...` assignments are applied before any
+            `extra-<name>` appends, so `extra-<name>` appends to the base value
+            regardless of line order.
+
+            Without this feature, an `extra-<name>` before its base `<name> =`
+            assignment is silently discarded, because the later plain
+            assignment replaces the whole value.
+        )",
+        .trackingUrl = "https://github.com/NixOS/nix/issues/9487",
     },
 }};
 

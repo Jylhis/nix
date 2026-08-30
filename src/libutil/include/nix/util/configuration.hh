@@ -70,6 +70,13 @@ public:
      */
     virtual bool set(const std::string & name, const std::string & value) = 0;
 
+    /**
+     * Whether `set(name, ...)` would append to an existing appendable
+     * setting via the `extra-` prefix, rather than assign. Mirrors the
+     * classification in `Config::set`. Defaults to false.
+     */
+    virtual bool isAppendSetting(const std::string & name) const;
+
     struct SettingInfo
     {
         std::string value;
@@ -168,6 +175,8 @@ public:
     Config(StringMap initials = {});
 
     bool set(const std::string & name, const std::string & value) override;
+
+    bool isAppendSetting(const std::string & name) const override;
 
     void addSetting(AbstractSetting * setting);
 

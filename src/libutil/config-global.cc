@@ -23,6 +23,14 @@ bool GlobalConfig::set(const std::string & name, const std::string & value)
     return false;
 }
 
+bool GlobalConfig::isAppendSetting(const std::string & name) const
+{
+    for (auto & config : configRegistrations())
+        if (config->isAppendSetting(name))
+            return true;
+    return false;
+}
+
 void GlobalConfig::getSettings(std::map<std::string, SettingInfo> & res, bool overriddenOnly) const
 {
     for (auto & config : configRegistrations())

@@ -72,3 +72,29 @@ val2=$(nix config show warn-dirty)
 [[ $(nix config show --min-free 64K min-free) = 65536 ]]
 [[ $(nix config show --min-free 1M min-free) = 1048576 ]]
 [[ $(nix config show --min-free 2G min-free) = 2147483648 ]]
+
+# Isolate the following tests from the NIX_CONFIG set above.
+unset NIX_CONFIG
+
+# Test that `extra-<name>` is order-dependent by default: an `extra-` append
+# that appears before its base `<name> =` assignment is discarded by the later
+# plain assignment.
+cat > "$TEST_ROOT/ordering-legacy.conf" <<EOF
+extra-allowed-uris = https://before.example.com
+allowed-uris = https://base.example.com
+EOF
+export NIX_USER_CONF_FILES=$TEST_ROOT/ordering-legacy.conf
+var=$(nix config show | grep '^allowed-uris =' | cut -d '=' -f 2 | xargs)
+[[ $var == https://base.example.com ]]
+
+# With the `deterministic-config-merge` experimental feature, plain assignments
+# are applied before `extra-` appends within a source, so the append lands on
+# top of the base value regardless of the order the two lines appear in.
+cat > "$TEST_ROOT/ordering-deterministic.conf" <<EOF
+experimental-features = nix-command deterministic-config-merge
+extra-allowed-uris = https://before.example.com
+allowed-uris = https://base.example.com
+EOF
+export NIX_USER_CONF_FILES=$TEST_ROOT/ordering-deterministic.conf
+var=$(nix config show | grep '^allowed-uris =' | cut -d '=' -f 2 | xargs)
+[[ $var == "https://base.example.com https://before.example.com" ]]

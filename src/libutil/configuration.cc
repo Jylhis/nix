@@ -43,6 +43,22 @@ bool Config::set(const std::string & name, const std::string & value)
     return true;
 }
 
+bool AbstractConfig::isAppendSetting(const std::string & name) const
+{
+    return false;
+}
+
+bool Config::isAppendSetting(const std::string & name) const
+{
+    if (_settings.contains(name))
+        return false; // exact match is an assignment, not an append
+    if (hasPrefix(name, "extra-")) {
+        auto i = _settings.find(std::string(name, 6));
+        return i != _settings.end() && i->second.setting->isAppendable();
+    }
+    return false;
+}
+
 void Config::addSetting(AbstractSetting * setting)
 {
     _settings.emplace(setting->name, Config::SettingData{false, setting});
@@ -188,17 +204,31 @@ void AbstractConfig::applyConfig(const std::string & contents, const std::string
         if (name == "experimental-features" || name == "extra-experimental-features")
             set(name, value);
 
-    // Then apply other settings
-    // XXX: NIX_PATH must override the regular setting! This is done in `initGC()`
-    // Environment variables overriding settings should probably be part of the Config mechanism,
-    // but at the time of writing it's not worth building that for just one thing
-    for (const auto & [name, value] : parsedContents) {
-        if (name != "experimental-features" && name != "extra-experimental-features") {
-            if ((name == "nix-path" || name == "extra-nix-path") && getEnv("NIX_PATH").has_value()) {
+    /* Apply the remaining settings. With `deterministic-config-merge` enabled,
+       plain assignments are applied before `extra-` appends (classified via
+       `isAppendSetting`, as in `Config::set`), making the append
+       order-independent; otherwise settings apply in source order.
+       Experimental-features are applied first (above) since they gate this. */
+
+    // XXX: NIX_PATH must override the regular setting! This is done in `initGC()`.
+    const bool nixPathOverriddenByEnv = getEnv("NIX_PATH").has_value();
+
+    auto applyRest = [&](auto shouldApply) {
+        for (const auto & [name, value] : parsedContents) {
+            if (name == "experimental-features" || name == "extra-experimental-features")
                 continue;
-            }
-            set(name, value);
+            if ((name == "nix-path" || name == "extra-nix-path") && nixPathOverriddenByEnv)
+                continue;
+            if (shouldApply(name))
+                set(name, value);
         }
+    };
+
+    if (experimentalFeatureSettings.isEnabled(Xp::DeterministicConfigMerge)) {
+        applyRest([&](const std::string & name) { return !isAppendSetting(name); });
+        applyRest([&](const std::string & name) { return isAppendSetting(name); });
+    } else {
+        applyRest([](const std::string &) { return true; });
     }
 }
 

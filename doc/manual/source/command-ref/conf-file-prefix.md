@@ -56,6 +56,17 @@ extra-substituters = c d
 
 defines the `substituters` setting to be `a b c d`.
 
+> **Note**
+>
+> By default `extra-<name>` appends only if it comes *after* the plain
+> `<name> = ...` assignment; an `extra-<name>` *before* it (for example when a
+> tool emits settings alphabetically) is discarded, because the later
+> assignment replaces the whole value.
+>
+> The [`deterministic-config-merge`](@docroot@/development/experimental-features.md#xp-feature-deterministic-config-merge)
+> experimental feature makes this order-independent, applying all plain
+> assignments in a source before its `extra-<name>` appends.
+
 Unknown option names are not an error, and are simply ignored with a warning.
 
 ## Command line flags

@@ -1,15 +1,12 @@
-# This is just a stub project to include all the others as subprojects
-# for development shell purposes
+# This is just a top-level project to include all the others as subprojects
+# for development shell purposes (when building via Nix) or for distro packaging purposes.
 
 project(
-  'nix-dev-shell',
+  'Nix',
   'cpp',
   version : files('.version'),
   subproject_dir : 'src',
-  default_options : [
-    'localstatedir=/nix/var',
-  ],
-  meson_version : '>= 1.1',
+  meson_version : '>= 1.8',
 )
 
 # Internal Libraries
@@ -20,6 +17,14 @@ subproject('libexpr')
 subproject('libflake')
 subproject('libmain')
 subproject('libcmd')
+
+# External C wrapper libraries
+subproject('libutil-c')
+subproject('libstore-c')
+subproject('libfetchers-c')
+subproject('libexpr-c')
+subproject('libflake-c')
+subproject('libmain-c')
 
 # Executables
 subproject('nix')
@@ -37,33 +42,37 @@ if get_option('doc-gen')
   endif
 endif
 
-# External C wrapper libraries
-subproject('libutil-c')
-subproject('libstore-c')
-subproject('libfetchers-c')
-subproject('libexpr-c')
-subproject('libflake-c')
-subproject('libmain-c')
+# Testing
+unit_tests = get_option('unit-tests')
+fuzzers = get_option('fuzzers')
 
-asan_enabled = 'address' in get_option('b_sanitize')
-
-# Language Bindings
-if get_option('bindings') and not meson.is_cross_build() and not asan_enabled
-  subproject('perl')
+if unit_tests
+  subproject('libutil-test-support')
 endif
 
-# Testing
-if get_option('unit-tests')
-  subproject('libutil-test-support')
+if unit_tests or fuzzers
   subproject('libutil-tests')
+endif
+
+if unit_tests
   subproject('libstore-test-support')
+endif
+
+if unit_tests or fuzzers
   subproject('libstore-tests')
+endif
+
+if unit_tests
   subproject('libfetchers-tests')
   subproject('libexpr-test-support')
   subproject('libexpr-tests')
   subproject('libflake-tests')
 endif
-subproject('nix-functional-tests')
+
+if get_option('functional-tests')
+  subproject('nix-functional-tests')
+endif
+
 if get_option('json-schema-checks')
   subproject('json-schema-checks')
 endif

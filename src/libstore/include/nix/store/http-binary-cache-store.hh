@@ -14,6 +14,10 @@ struct HttpBinaryCacheStoreConfig : std::enable_shared_from_this<HttpBinaryCache
                                     virtual Store::Config,
                                     BinaryCacheStoreConfig
 {
+private:
+    void anchor() override;
+
+public:
     HttpBinaryCacheStoreConfig(const Params & params)
         : StoreConfig(params, FilePathType::Unix)
         , BinaryCacheStoreConfig(params)
@@ -88,6 +92,8 @@ struct HttpBinaryCacheStoreConfig : std::enable_shared_from_this<HttpBinaryCache
 
 class HttpBinaryCacheStore : public virtual BinaryCacheStore
 {
+    void anchor() override;
+
     struct State
     {
         bool enabled = true;
@@ -138,7 +144,7 @@ protected:
      * @param source The data source (should already be compressed if needed)
      * @param sizeHint Size hint for the data
      * @param mimeType The MIME type of the content
-     * @param contentEncoding Optional Content-Encoding header value (e.g., "xz", "br")
+     * @param headers Additional headers to include in the HTTP request.
      */
     void upload(
         std::string_view path,

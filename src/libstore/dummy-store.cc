@@ -5,10 +5,15 @@
 #include "nix/util/json-utils.hh"
 #include "nix/store/dummy-store-impl.hh"
 #include "nix/store/realisation.hh"
+#include "nix/store/derivation/aterm.hh"
 
 #include <boost/unordered/concurrent_flat_map.hpp>
 
 namespace nix {
+
+void DummyStoreConfig::anchor() {}
+
+void DummyStore::anchor() {}
 
 std::string DummyStoreConfig::doc()
 {
@@ -31,6 +36,8 @@ namespace {
 
 class WholeStoreViewAccessor : public SourceAccessor
 {
+    void anchor() override {};
+
     using BaseName = std::string;
 
     /**
@@ -63,6 +70,8 @@ class WholeStoreViewAccessor : public SourceAccessor
         });
 
         if (!res)
+            /* The accessor is truly empty, i.e. without any file at root so
+               any subsequent operation with it will fail. */
             res = &emptyAccessor;
 
         return callback(*res, path);
@@ -101,6 +110,7 @@ public:
 
     DirEntries readDirectory(const CanonPath & path) override
     {
+        /* FIXME: Special-case the root directory to read the whole store, not just an empty root. */
         return callWithAccessorForPath(
             path, [](SourceAccessor & accessor, const CanonPath & path) { return accessor.readDirectory(path); });
     }
@@ -126,6 +136,10 @@ bool DummyStoreConfig::getReadOnly() const
 
 struct DummyStoreImpl : DummyStore
 {
+private:
+    void anchor() override;
+
+public:
     using Config = DummyStoreConfig;
 
     /**
@@ -215,7 +229,7 @@ struct DummyStoreImpl : DummyStore
         if (info.path.isDerivation()) {
             warn("back compat supporting `addToStore` for inserting derivations in dummy store");
             writeDerivation(
-                parseDerivation(*this, accessor->readFile(CanonPath::root), Derivation::nameFromPath(info.path)));
+                derivation::parse(*this, accessor->readFile(CanonPath::root), Derivation::nameFromPath(info.path)));
             return;
         }
 
@@ -328,7 +342,7 @@ struct DummyStoreImpl : DummyStore
         return readDerivation(drvPath);
     }
 
-    void registerDrvOutput(const Realisation & output) override
+    void registerDrvOutputUnchecked(const Realisation & output) override
     {
         buildTrace.insert_or_visit({output.id.drvPath, {{output.id.outputName, output}}}, [&](auto & kv) {
             kv.second.insert_or_assign(output.id.outputName, output);
@@ -358,7 +372,7 @@ struct DummyStoreImpl : DummyStore
                 /* compute path info on demand */
                 auto res2 = make_ref<MemorySourceAccessor>();
                 res2->root = MemorySourceAccessor::File::Regular{
-                    .contents = kv.second.unparse(*this, false),
+                    .contents = unparse(kv.second, *this),
                 };
                 res = std::move(res2).get_ptr();
             });
@@ -378,6 +392,8 @@ struct DummyStoreImpl : DummyStore
     }
 };
 
+void DummyStoreImpl::anchor() {}
+
 ref<DummyStore> DummyStore::Config::openDummyStore() const
 {
     return make_ref<DummyStoreImpl>(ref{shared_from_this()});
@@ -389,10 +405,9 @@ static RegisterStoreImplementation<DummyStore::Config> regDummyStore;
 
 namespace nlohmann {
 
-using namespace nix;
-
-DummyStore::PathInfoAndContents adl_serializer<DummyStore::PathInfoAndContents>::from_json(const json & json)
+nix::DummyStore::PathInfoAndContents adl_serializer<nix::DummyStore::PathInfoAndContents>::from_json(const json & json)
 {
+    using namespace nix;
     auto & obj = getObject(json);
     return DummyStore::PathInfoAndContents{
         .info = valueAt(obj, "info"),
@@ -400,7 +415,8 @@ DummyStore::PathInfoAndContents adl_serializer<DummyStore::PathInfoAndContents>:
     };
 }
 
-void adl_serializer<DummyStore::PathInfoAndContents>::to_json(json & json, const DummyStore::PathInfoAndContents & val)
+void adl_serializer<nix::DummyStore::PathInfoAndContents>::to_json(
+    json & json, const nix::DummyStore::PathInfoAndContents & val)
 {
     json = {
         {"info", val.info},
@@ -408,8 +424,9 @@ void adl_serializer<DummyStore::PathInfoAndContents>::to_json(json & json, const
     };
 }
 
-ref<DummyStoreConfig> adl_serializer<ref<DummyStore::Config>>::from_json(const json & json)
+nix::ref<nix::DummyStoreConfig> adl_serializer<nix::ref<nix::DummyStore::Config>>::from_json(const json & json)
 {
+    using namespace nix;
     auto & obj = getObject(json);
     auto cfg = make_ref<DummyStore::Config>(DummyStore::Config::Params{});
     cfg->storeDir_.set(getString(valueAt(obj, "store")));
@@ -417,15 +434,16 @@ ref<DummyStoreConfig> adl_serializer<ref<DummyStore::Config>>::from_json(const j
     return cfg;
 }
 
-void adl_serializer<DummyStoreConfig>::to_json(json & json, const DummyStoreConfig & val)
+void adl_serializer<nix::DummyStoreConfig>::to_json(json & json, const nix::DummyStoreConfig & val)
 {
     json = {
         {"store", val.storeDir},
     };
 }
 
-ref<DummyStore> adl_serializer<ref<DummyStore>>::from_json(const json & json)
+nix::ref<nix::DummyStore> adl_serializer<nix::ref<nix::DummyStore>>::from_json(const json & json)
 {
+    using namespace nix;
     auto & obj = getObject(json);
     ref<DummyStore> res = adl_serializer<ref<DummyStoreConfig>>::from_json(valueAt(obj, "config"))->openDummyStore();
     for (auto & [k, v] : getObject(valueAt(obj, "contents")))
@@ -442,8 +460,9 @@ ref<DummyStore> adl_serializer<ref<DummyStore>>::from_json(const json & json)
     return res;
 }
 
-void adl_serializer<DummyStore>::to_json(json & json, const DummyStore & val)
+void adl_serializer<nix::DummyStore>::to_json(json & json, const nix::DummyStore & val)
 {
+    using namespace nix;
     json = {
         {"config", *val.config},
         {"contents",

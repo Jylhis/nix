@@ -8,7 +8,7 @@ project(
     'warning_level=1',
     'errorlogs=true', # Please print logs for tests that fail
   ],
-  meson_version : '>= 1.1',
+  meson_version : '>= 1.8',
   license : 'LGPL-2.1-or-later',
 )
 
@@ -31,10 +31,20 @@ check_funcs = [
     'posix_fallocate',
     'Optionally used to preallocate files to be large enough before writing to them.',
   ],
+  [
+    'bindat',
+    'Avoids forking when binding AF_UNIX sockets with paths longer than sun_path.',
+    '#include <sys/socket.h>',
+  ],
+  [
+    'connectat',
+    'Avoids forking when connecting AF_UNIX sockets with paths longer than sun_path.',
+    '#include <sys/socket.h>',
+  ],
 ]
 foreach funcspec : check_funcs
   define_name = 'HAVE_' + funcspec[0].underscorify().to_upper()
-  define_value = cxx.has_function(funcspec[0]).to_int()
+  define_value = cxx.has_function(funcspec[0], prefix : funcspec.get(2, '')).to_int()
   configdata_priv.set(define_name, define_value, description : funcspec[1])
 endforeach
 
@@ -44,11 +54,20 @@ configdata_pub.set(
   description : 'Whether nix has been built with UBSan enabled',
 )
 
+configdata_pub.set(
+  'NIX_ASAN_ENABLED',
+  ('address' in get_option('b_sanitize')).to_int(),
+  description : 'Whether nix has been built with ASan enabled',
+)
+
 subdir('nix-meson-build-support/libatomic')
 
 if host_machine.system() == 'windows'
   socket = cxx.find_library('ws2_32')
-  deps_other += socket
+  # `NtCreateFile` and `RtlNtStatusToDosError`, used by the `*at`-style file
+  # system functions in `windows/file-system-at.cc`, live here.
+  nt = cxx.find_library('ntdll')
+  deps_other += [ socket, nt ]
 elif host_machine.system() == 'sunos'
   socket = cxx.find_library('socket')
   network_service_library = cxx.find_library('nsl')
@@ -138,6 +157,7 @@ sources = [ config_priv_h ] + files(
   'bump-memory-resource.cc',
   'caching-source-accessor.cc',
   'canon-path.cc',
+  'checked-arithmetic.cc',
   'compression-algo.cc',
   'compression-settings.cc',
   'compression.cc',
@@ -159,6 +179,7 @@ sources = [ config_priv_h ] + files(
   'hash.cc',
   'hilite.cc',
   'json-utils.cc',
+  'library-versions.cc',
   'logging.cc',
   'memory-source-accessor.cc',
   'memory-source-accessor/json.cc',
@@ -170,6 +191,7 @@ sources = [ config_priv_h ] + files(
   'position.cc',
   'posix-source-accessor.cc',
   'processes.cc',
+  'register-library-versions.cc',
   'serialise.cc',
   'signature/local-keys.cc',
   'signature/signer.cc',
@@ -232,7 +254,7 @@ libraries_private = []
 if host_machine.system() == 'windows'
   # `libraries_private` cannot contain ad-hoc dependencies (from
   # `find_library), so we need to do this manually
-  libraries_private += [ '-lws2_32' ]
+  libraries_private += [ '-lws2_32', '-lntdll' ]
 endif
 
 subdir('nix-meson-build-support/export')

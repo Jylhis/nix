@@ -19,6 +19,10 @@ struct ProfileDirsOptions;
 
 struct LogFileSettings : public virtual Config
 {
+private:
+    void anchor() override;
+
+public:
     Setting<bool> keepLog{
         this,
         true,
@@ -45,6 +49,10 @@ struct LogFileSettings : public virtual Config
 
 struct NarInfoDiskCacheSettings : public virtual Config
 {
+private:
+    void anchor() override;
+
+public:
     Setting<unsigned int> ttlNegative{
         this,
         3600,
@@ -96,6 +104,9 @@ class Settings : public virtual Config,
                  private WorkerSettings,
                  private NarInfoDiskCacheSettings
 {
+private:
+    void anchor() override;
+public:
     StringSet getDefaultSystemFeatures();
 
     StringSet getDefaultExtraPlatforms();
@@ -209,7 +220,7 @@ public:
           The following system types are widely used, as Nix is actively supported on these platforms:
 
           - `x86_64-linux`
-          - `x86_64-darwin`
+          - `x86_64-darwin` (only via Rosetta 2)
           - `i686-linux`
           - `aarch64-linux`
           - `aarch64-darwin`

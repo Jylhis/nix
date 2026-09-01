@@ -1,13 +1,20 @@
 #include "nix/util/util.hh"
+#include "nix/util/ref.hh"
 #include "nix/util/fmt.hh"
 #include "nix/util/signals.hh"
 
 #include <array>
 #include <cctype>
+#include <mutex>
 
+#include <openssl/crypto.h>
 #include <sodium.h>
 #include <boost/lexical_cast.hpp>
 #include <stdint.h>
+
+#ifdef _WIN32
+#  include <winsock2.h>
+#endif
 
 #ifdef NDEBUG
 #  error "Nix may not be built with assertions disabled (i.e. with -DNDEBUG)."
@@ -15,29 +22,63 @@
 
 namespace nix {
 
+void FormatError::anchor() {}
+
+bad_ref_cast::~bad_ref_cast() {}
+
 void initLibUtil()
 {
-    // Check that exception handling works. Exception handling has been observed
-    // not to work on darwin when the linker flags aren't quite right.
-    // In this case we don't want to expose the user to some unrelated uncaught
-    // exception, but rather tell them exactly that exception handling is
-    // broken.
-    // When exception handling fails, the message tends to be printed by the
-    // C++ runtime, followed by an abort.
-    // For example on macOS we might see an error such as
-    // libc++abi: terminating with uncaught exception of type nix::SystemError: error: C++ exception handling is broken.
-    // This would appear to be a problem with the way Nix was compiled and/or linked and/or loaded.
-    bool caught = false;
-    try {
-        throwExceptionSelfCheck();
-    } catch (const nix::Error & _e) {
-        caught = true;
-    }
-    // This is not actually the main point of this check, but let's make sure anyway:
-    assert(caught);
+    static std::once_flag done;
+    std::call_once(done, []() {
+        // Check that exception handling works. Exception handling has been observed
+        // not to work on darwin when the linker flags aren't quite right.
+        // In this case we don't want to expose the user to some unrelated uncaught
+        // exception, but rather tell them exactly that exception handling is
+        // broken.
+        // When exception handling fails, the message tends to be printed by the
+        // C++ runtime, followed by an abort.
+        // For example on macOS we might see an error such as
+        // libc++abi: terminating with uncaught exception of type nix::SystemError: error: C++ exception handling is
+        // broken. This would appear to be a problem with the way Nix was compiled and/or linked and/or loaded.
+        bool caught = false;
+        try {
+            throwExceptionSelfCheck();
+        } catch (const nix::Error & _e) {
+            caught = true;
+        }
+        // This is not actually the main point of this check, but let's make sure anyway:
+        assert(caught);
 
-    if (sodium_init() == -1)
-        throw Error("could not initialise libsodium");
+        if (sodium_init() == -1)
+            throw Error("could not initialise libsodium");
+
+        /* Prevent OpenSSL from registering its atexit() handler
+           (OPENSSL_cleanup()). If we exit() while other threads that use
+           OpenSSL are still running, OPENSSL_cleanup() frees OpenSSL's
+           thread-local state handlers; when those threads then exit, their
+           thread-specific-data destructors (init_thread_stop()) crash on
+           the freed state. This happens in particular in nix-daemon
+           connection children, where library destructors run by _dl_fini()
+           (e.g. aws-crt-cpp's) stop their worker threads *after*
+           OPENSSL_cleanup() has already run. Since we're exiting anyway,
+           skipping the cleanup is harmless. This must run before any other
+           use of OpenSSL, since only the first initialisation takes
+           effect. */
+        if (OPENSSL_init_crypto(OPENSSL_INIT_NO_ATEXIT, nullptr) != 1)
+            throw Error("could not initialise OpenSSL");
+
+#ifdef _WIN32
+        /* Winsock needs this once per process before any socket call; without
+           it every socket() fails with WSANOTINITIALISED. No matching
+           WSACleanup(), for the same reason the OpenSSL atexit() handler is
+           suppressed above. The error code comes from the return value because
+           WSAGetLastError() is not usable until Winsock is up, and must be a
+           DWORD to pick the explicit-code WinError constructor. */
+        WSADATA wsaData;
+        if (DWORD err = static_cast<DWORD>(WSAStartup(MAKEWORD(2, 2), &wsaData)); err != 0)
+            throw windows::WinError(err, "could not initialise Winsock");
+#endif
+    });
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -45,9 +86,9 @@ void initLibUtil()
 std::vector<char *> stringsToCharPtrs(const Strings & ss)
 {
     std::vector<char *> res;
-    for (auto & s : ss)
-        res.push_back((char *) s.c_str());
-    res.push_back(0);
+    for (const auto & s : ss)
+        res.push_back(const_cast<char *>(requireCString(s)));
+    res.push_back(nullptr);
     return res;
 }
 
@@ -80,14 +121,18 @@ std::string replaceStrings(std::string res, std::string_view from, std::string_v
     return res;
 }
 
-std::string rewriteStrings(std::string s, const StringMap & rewrites)
+std::string
+rewriteStrings(std::string s, const StringMap & rewrites, std::set<uint64_t> * matches, uint64_t offsetShift)
 {
     for (auto & i : rewrites) {
         if (i.first == i.second)
             continue;
         size_t j = 0;
-        while ((j = s.find(i.first, j)) != s.npos)
+        while ((j = s.find(i.first, j)) != s.npos) {
+            if (matches)
+                matches->insert(j + offsetShift);
             s.replace(j, i.first.size(), i.second);
+        }
     }
     return s;
 }
@@ -239,6 +284,10 @@ void ignoreExceptionExceptInterrupt(Verbosity lvl)
     try {
         throw;
     } catch (const Interrupted & e) {
+        throw;
+    } catch (const Cancelled & e) {
+        /* Morally the same as Interrupted, just not triggered by a user but some other
+           cancellation. */
         throw;
     } catch (Error & e) {
         printMsg(lvl, ANSI_RED "error (ignored):" ANSI_NORMAL " %s", e.info().msg);

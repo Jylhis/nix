@@ -121,9 +121,9 @@ struct SQLiteStmt
         /**
          * Bind the next parameter.
          */
-        Use & operator()(std::string_view value, bool notNull = true);
-        Use & operator()(const unsigned char * data, size_t len, bool notNull = true);
-        Use & operator()(int64_t value, bool notNull = true);
+        Use & apply(std::string_view value, bool notNull = true);
+        Use & apply(const unsigned char * data, size_t len, bool notNull = true);
+        Use & apply(int64_t value, bool notNull = true);
         Use & bind(); // null
 
         int step();
@@ -166,16 +166,19 @@ struct SQLiteTxn
     ~SQLiteTxn();
 };
 
-struct SQLiteError : CloneableError<SQLiteError, Error>
+class SQLiteError : public CloneableError<SQLiteError, Error>
 {
     std::string path;
     std::string errMsg;
     int errNo, extendedErrNo, offset;
 
+    void anchor() override;
+
+public:
     template<typename... Args>
-    [[noreturn]] static void throw_(sqlite3 * db, const std::string & fs, const Args &... args)
+    [[noreturn]] static void throw_(sqlite3 * db, const std::string & fs, Args &&... args)
     {
-        throw_(db, HintFmt(fs, args...));
+        throw_(db, HintFmt(fs, std::forward<Args>(args)...));
     }
 
     SQLiteError(const char * path, const char * errMsg, int errNo, int extendedErrNo, int offset, HintFmt && hf);
@@ -190,8 +193,8 @@ protected:
         int extendedErrNo,
         int offset,
         const std::string & fs,
-        const Args &... args)
-        : SQLiteError(path, errMsg, errNo, extendedErrNo, offset, HintFmt(fs, args...))
+        Args &&... args)
+        : SQLiteError(path, errMsg, errNo, extendedErrNo, offset, HintFmt(fs, std::forward<Args>(args)...))
     {
     }
 

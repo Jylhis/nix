@@ -5,6 +5,7 @@
 #include <sys/time.h>
 
 #include <filesystem>
+#include <memory>
 
 #include "nix/util/types.hh"
 #include "nix/util/error.hh"
@@ -45,8 +46,10 @@ struct CanonicalizePathMetadataOptions
  */
 #if NIX_SUPPORT_ACL
 #  define NIX_WHEN_SUPPORT_ACLS(ARG) .ignoredAcls = ARG,
+#  define NIX_WHEN_SUPPORT_ACLS2(ARG) ARG
 #else
 #  define NIX_WHEN_SUPPORT_ACLS(ARG)
+#  define NIX_WHEN_SUPPORT_ACLS2(ARG)
 #endif
 
 /**
@@ -69,6 +72,12 @@ void canonicalisePathMetaData(const std::filesystem::path & path, CanonicalizePa
 
 void canonicaliseTimestampAndPermissions(const std::filesystem::path & path);
 
-MakeError(PathInUse, Error);
+class RestoreSinkHooks;
+
+std::unique_ptr<RestoreSinkHooks> makeCanonicalisingRestoreHooks(
+#if NIX_SUPPORT_ACL
+    const StringSet & ignoredAcls
+#endif
+);
 
 } // namespace nix

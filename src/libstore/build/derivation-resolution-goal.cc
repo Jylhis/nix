@@ -1,8 +1,11 @@
 #include "nix/store/build/derivation-resolution-goal.hh"
 #include "nix/store/build/worker.hh"
 #include "nix/util/util.hh"
+#include "nix/store/derivation/resolution.hh"
 
 #include <nlohmann/json.hpp>
+
+#include <array>
 
 namespace nix {
 
@@ -33,38 +36,44 @@ Goal::Co DerivationResolutionGoal::resolveDerivation()
 
     std::map<ref<const SingleDerivedPath>, GoalPtr, ValueComparison> inputGoals;
 
-    auto addWaiteeDerivedPath = [&worker = worker, buildMode = buildMode, &waitees, &inputGoals](
-                                    this const auto & self,
-                                    ref<const SingleDerivedPath> inputDrv,
-                                    const DerivedPathMap<StringSet>::ChildNode & inputNode) -> void {
-        if (!inputNode.value.empty()) {
-            auto g = worker.makeGoal(
-                DerivedPath::Built{
-                    .drvPath = inputDrv,
-                    .outputs = inputNode.value,
+    /* Ensure that pure, non-fixed-output derivations don't depend on
+       impure derivations. Only worth checking each input derivation
+       once, however many of its outputs we depend on. */
+    bool checkImpureInputs =
+        experimentalFeatureSettings.isEnabled(Xp::ImpureDerivations) && !type(*drv).isImpure() && !type(*drv).isFixed();
+    StorePathSet checkedInputDrvs;
+
+    for (const auto & input : drv->inputs) {
+        std::visit(
+            overloaded{
+                [&](const SingleDerivedPath::Opaque &) {
+                    /* Source paths don't need to be waited on */
                 },
-                buildMode == bmRepair ? bmRepair : bmNormal);
-            inputGoals.insert_or_assign(inputDrv, g);
-            waitees.insert(std::move(g));
-        }
-        for (const auto & [outputName, childNode] : inputNode.childMap)
-            self(make_ref<SingleDerivedPath>(SingleDerivedPath::Built{inputDrv, outputName}), childNode);
-    };
+                [&](const SingleDerivedPath::Built & built) {
+                    /* For a dynamic derivation input, this checks the
+                       root derivation the chain is ultimately built
+                       from. */
+                    auto & inputDrvPath = built.drvPath->getBaseStorePath();
+                    if (checkImpureInputs && checkedInputDrvs.insert(inputDrvPath).second) {
+                        auto inputDrv = worker.evalStore.readDerivation(inputDrvPath);
+                        if (type(inputDrv).isImpure())
+                            throw Error(
+                                "pure derivation '%s' depends on impure derivation '%s'",
+                                worker.store.printStorePath(drvPath),
+                                worker.store.printStorePath(inputDrvPath));
+                    }
 
-    for (const auto & [inputDrvPath, inputNode] : drv->inputDrvs.map) {
-        /* Ensure that pure, non-fixed-output derivations don't
-           depend on impure derivations. */
-        if (experimentalFeatureSettings.isEnabled(Xp::ImpureDerivations) && !drv->type().isImpure()
-            && !drv->type().isFixed()) {
-            auto inputDrv = worker.evalStore.readDerivation(inputDrvPath);
-            if (inputDrv.type().isImpure())
-                throw Error(
-                    "pure derivation '%s' depends on impure derivation '%s'",
-                    worker.store.printStorePath(drvPath),
-                    worker.store.printStorePath(inputDrvPath));
-        }
-
-        addWaiteeDerivedPath(makeConstantStorePathRef(inputDrvPath), inputNode);
+                    auto inputDrvRef = make_ref<SingleDerivedPath>(input);
+                    auto g = worker.makeGoal(
+                        DerivedPath::Built{
+                            .drvPath = built.drvPath,
+                            .outputs = OutputsSpec::Names{built.output},
+                        },
+                        buildMode == bmRepair ? bmRepair : bmNormal);
+                    inputGoals.insert_or_assign(inputDrvRef, g);
+                    waitees.insert(std::move(g));
+                }},
+            input.raw());
     }
 
     co_await await(std::move(waitees));
@@ -93,65 +102,65 @@ Goal::Co DerivationResolutionGoal::resolveDerivation()
     /* Determine the full set of input paths. */
 
     /* First, the input derivations. */
-    {
-        auto & fullDrv = *drv;
+    auto & fullDrv = *drv;
 
-        if (fullDrv.shouldResolve()) {
-            experimentalFeatureSettings.require(Xp::CaDerivations);
+    if (derivation::shouldResolve(fullDrv)) {
+        experimentalFeatureSettings.require(Xp::CaDerivations);
 
-            /* We are be able to resolve this derivation based on the
-               now-known results of dependencies. If so, we become a
-               stub goal aliasing that resolved derivation goal. */
-            std::optional attempt = fullDrv.tryResolve(
-                worker.store,
-                [&](ref<const SingleDerivedPath> drvPath, const std::string & outputName) -> std::optional<StorePath> {
-                    auto mEntry = get(inputGoals, drvPath);
-                    if (!mEntry)
-                        return std::nullopt;
+        /* We are be able to resolve this derivation based on the
+           now-known results of dependencies. If so, we become a
+           stub goal aliasing that resolved derivation goal. */
 
-                    auto & buildResult = (*mEntry)->buildResult;
-                    return std::visit(
-                        overloaded{
-                            [](const BuildResult::Failure &) -> std::optional<StorePath> { return std::nullopt; },
-                            [&](const BuildResult::Success & success) -> std::optional<StorePath> {
-                                auto i = get(success.builtOutputs, outputName);
-                                if (!i)
-                                    return std::nullopt;
-
+        auto attempt = tryResolve(
+            fullDrv,
+            worker.store,
+            [&](ref<const SingleDerivedPath> inputDrvPath, const std::string & outputName) -> std::optional<StorePath> {
+                auto inputDrvRef = make_ref<SingleDerivedPath>(SingleDerivedPath::Built{inputDrvPath, outputName});
+                auto mEntry = get(inputGoals, inputDrvRef);
+                if (!mEntry)
+                    return std::nullopt;
+                auto & buildResult = (*mEntry)->buildResult;
+                return std::visit(
+                    overloaded{
+                        [](const BuildResult::Failure &) -> std::optional<StorePath> { return std::nullopt; },
+                        [&](const BuildResult::Success & success) -> std::optional<StorePath> {
+                            auto i = get(success.builtOutputs, outputName);
+                            if (i)
                                 return i->outPath;
-                            },
+                            return std::nullopt;
                         },
-                        buildResult.inner);
-                });
-            if (!attempt) {
-                /* TODO (impure derivations-induced tech debt) (see below):
-                   The above attempt should have found it, but because we manage
-                   inputDrvOutputs statefully, sometimes it gets out of sync with
-                   the real source of truth (store). So we query the store
-                   directly if there's a problem. */
-                attempt = fullDrv.tryResolve(worker.store, &worker.evalStore);
-            }
-            assert(attempt);
+                    },
+                    buildResult.inner);
+            });
 
-            auto pathResolved = computeStorePath(worker.store, Derivation{*attempt});
-
-            auto msg =
-                fmt("resolved derivation: '%s' -> '%s'",
-                    worker.store.printStorePath(drvPath),
-                    worker.store.printStorePath(pathResolved));
-            act = std::make_unique<Activity>(
-                *logger,
-                lvlInfo,
-                actBuildWaiting,
-                msg,
-                Logger::Fields{
-                    worker.store.printStorePath(drvPath),
-                    worker.store.printStorePath(pathResolved),
-                });
-
-            resolvedDrv =
-                std::make_unique<std::pair<StorePath, BasicDerivation>>(std::move(pathResolved), *std::move(attempt));
+        if (!attempt) {
+            /* TODO (impure derivations-induced tech debt) (see below):
+               The above attempt should have found it, but because we manage
+               inputDrvOutputs statefully, sometimes it gets out of sync with
+               the real source of truth (store). So we query the store
+               directly if there's a problem. */
+            attempt = tryResolve(fullDrv, worker.store, &worker.evalStore);
         }
+        assert(attempt);
+
+        auto pathResolved = computeStorePath(worker.store, unresolve(*attempt));
+
+        auto msg =
+            fmt("resolved derivation: '%s' -> '%s'",
+                worker.store.printStorePath(drvPath),
+                worker.store.printStorePath(pathResolved));
+        act = std::make_unique<Activity>(
+            *logger,
+            lvlInfo,
+            actBuildWaiting,
+            msg,
+            std::to_array<Logger::Field>({
+                worker.store.printStorePath(drvPath),
+                worker.store.printStorePath(pathResolved),
+            }));
+
+        resolvedDrv =
+            std::make_unique<std::pair<StorePath, BasicDerivation>>(std::move(pathResolved), std::move(*attempt));
     }
 
     co_return amDone(ecSuccess);

@@ -1,6 +1,7 @@
 #include "nix/fetchers/fetchers.hh"
 #include "nix/store/store-api.hh"
 #include "nix/util/fs-sink.hh"
+#include "nix/store/build.hh"
 #include "nix/util/source-path.hh"
 #include "nix/fetchers/fetch-to-store.hh"
 #include "nix/util/json-utils.hh"
@@ -11,6 +12,7 @@
 #include "nix/store/pathlocks.hh"
 #include "nix/util/environment-variables.hh"
 
+#include <thread>
 #include <nlohmann/json.hpp>
 
 namespace nix::fetchers {
@@ -35,9 +37,9 @@ const InputSchemeMap & getAllInputSchemes()
     return inputSchemes();
 }
 
-Input Input::fromURL(const Settings & settings, const std::string & url, bool requireTree)
+Input Input::fromURL(const std::string & url, bool requireTree)
 {
-    return fromURL(settings, parseURL(url), requireTree);
+    return fromURL(parseURL(url), requireTree);
 }
 
 static void fixupInput(Input & input)
@@ -49,10 +51,10 @@ static void fixupInput(Input & input)
     input.getLastModified();
 }
 
-Input Input::fromURL(const Settings & settings, const ParsedURL & url, bool requireTree)
+Input Input::fromURL(const ParsedURL & url, bool requireTree)
 {
     for (auto & [_, inputScheme] : inputSchemes()) {
-        auto res = inputScheme->inputFromURL(settings, url, requireTree);
+        auto res = inputScheme->inputFromURL(url, requireTree);
         if (res) {
             experimentalFeatureSettings.require(inputScheme->experimentalFeature());
             res->scheme = inputScheme;
@@ -70,7 +72,7 @@ Input Input::fromURL(const Settings & settings, const ParsedURL & url, bool requ
     throw Error("input '%s' is unsupported", url);
 }
 
-Input Input::fromAttrs(const Settings & settings, Attrs && attrs)
+Input Input::fromAttrs(Attrs && attrs)
 {
     auto schemeName = ({
         auto schemeNameOpt = maybeGetStrAttr(attrs, "type");
@@ -106,7 +108,7 @@ Input Input::fromAttrs(const Settings & settings, Attrs && attrs)
         if (name != "type" && name != "__final" && allowedAttrs.count(name) == 0)
             throw Error("input attribute '%s' not supported by scheme '%s'", name, schemeName);
 
-    auto res = inputScheme->inputFromAttrs(settings, attrs);
+    auto res = inputScheme->inputFromAttrs(attrs);
     if (!res)
         return raw();
     res->scheme = inputScheme;
@@ -123,6 +125,9 @@ std::optional<std::string> Input::getFingerprint(Store & store) const
         return *cachedFingerprint;
 
     auto fingerprint = scheme->getFingerprint(store, *this);
+
+    if (fingerprint)
+        fingerprint = std::string(scheme->schemeName()) + ":" + *fingerprint;
 
     cachedFingerprint = fingerprint;
 
@@ -166,8 +171,7 @@ bool Input::isFinal() const
 
 std::optional<std::filesystem::path> Input::isRelative() const
 {
-    assert(scheme);
-    return scheme->isRelative(*this);
+    return scheme ? scheme->isRelative(*this) : std::nullopt;
 }
 
 Attrs Input::toAttrs() const
@@ -319,7 +323,9 @@ std::pair<ref<SourceAccessor>, Input> Input::getAccessorUnchecked(const Settings
         try {
             auto storePath = computeStorePath(store);
 
-            store.ensurePath(storePath);
+            store.addTempRoot(storePath);
+
+            store.getBuilder()->ensurePath(storePath);
 
             debug("using substituted/cached input '%s' in '%s'", to_string(), store.printStorePath(storePath));
 
@@ -379,19 +385,20 @@ Input Input::applyOverrides(std::optional<std::string> ref, std::optional<Hash> 
 
 void Input::clone(const Settings & settings, Store & store, const std::filesystem::path & destDir) const
 {
-    assert(scheme);
+    if (!scheme)
+        throw Error("cannot clone unsupported input '%s'", attrsToJSON(attrs));
     scheme->clone(settings, store, *this, destDir);
 }
 
 std::optional<std::filesystem::path> Input::getSourcePath() const
 {
-    assert(scheme);
-    return scheme->getSourcePath(*this);
+    return scheme ? scheme->getSourcePath(*this) : std::nullopt;
 }
 
 void Input::putFile(const CanonPath & path, std::string_view contents, std::optional<std::string> commitMsg) const
 {
-    assert(scheme);
+    if (!scheme)
+        throw Error("unsupported input '%s' does not support modifying file '%s'", attrsToJSON(attrs), path);
     return scheme->putFile(*this, path, contents, commitMsg);
 }
 
@@ -522,12 +529,11 @@ std::string publicKeys_to_string(const std::vector<PublicKey> & publicKeys)
 
 namespace nlohmann {
 
-using namespace nix;
-
 #ifndef DOXYGEN_SKIP
 
-fetchers::PublicKey adl_serializer<fetchers::PublicKey>::from_json(const json & json)
+nix::fetchers::PublicKey adl_serializer<nix::fetchers::PublicKey>::from_json(const json & json)
 {
+    using namespace nix;
     fetchers::PublicKey res = {};
     auto & obj = getObject(json);
     if (auto * type = optionalValueAt(obj, "type"))
@@ -538,7 +544,7 @@ fetchers::PublicKey adl_serializer<fetchers::PublicKey>::from_json(const json & 
     return res;
 }
 
-void adl_serializer<fetchers::PublicKey>::to_json(json & json, const fetchers::PublicKey & p)
+void adl_serializer<nix::fetchers::PublicKey>::to_json(json & json, const nix::fetchers::PublicKey & p)
 {
     json["type"] = p.type;
     json["key"] = p.key;

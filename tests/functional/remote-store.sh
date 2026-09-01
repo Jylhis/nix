@@ -4,8 +4,6 @@ source common.sh
 
 TODO_NixOS
 
-clearStore
-
 # Ensure "fake ssh" remote store works just as legacy fake ssh would.
 nix --store ssh-ng://localhost?remote-store="$TEST_ROOT"/other-store doctor
 
@@ -23,6 +21,13 @@ else
     # And the the field is absent with the old daemon
     nix store info --json | jq -e 'has("trusted") | not'
 fi
+
+# `nix-env --install` through the daemon should not warn about
+# `use-xdg-base-directories`, and should still install successfully.
+expectStderr 0 nix-env --option use-xdg-base-directories true \
+    -p "$TEST_ROOT/daemon-profile" -f ./user-envs.nix -i foo-1.0 \
+    | grepQuietInverse "ignoring the client-specified setting 'use-xdg-base-directories'"
+nix-env -p "$TEST_ROOT/daemon-profile" -q '*' | grepQuiet foo-1.0
 
 # Test import-from-derivation through the daemon.
 [[ $(nix eval --impure --raw --file ./ifd.nix) = hi ]]

@@ -8,6 +8,7 @@
 
 #include "nix/store/path.hh"
 #include "nix/store/store-api.hh"
+#include "nix/store/build.hh"
 #include "nix/store/store-open.hh"
 #include "nix/store/store-reference.hh"
 #include "nix/store/build-result.hh"
@@ -178,7 +179,7 @@ nix_err nix_store_realise(
             .drvPath = nix::makeConstantStorePathRef(path->path), .outputs = nix::OutputsSpec::All{}}};
 
         const auto nixStore = store->ptr;
-        auto results = nixStore->buildPathsWithResults(paths, nix::bmNormal, nixStore);
+        auto results = nixStore->getBuilder(nixStore)->buildPathsWithResults(paths, nix::bmNormal);
 
         assert(results.size() == 1);
 
@@ -284,7 +285,7 @@ nix_derivation * nix_derivation_from_json(nix_c_context * context, Store * store
     if (context)
         context->last_err_code = NIX_OK;
     try {
-        return new nix_derivation{nix::Derivation::parseJsonAndValidate(*store->ptr, nlohmann::json::parse(json))};
+        return new nix_derivation{nix::derivation::parseJsonAndValidate(*store->ptr, nlohmann::json::parse(json))};
     }
     NIXC_CATCH_ERRS_NULL
 }

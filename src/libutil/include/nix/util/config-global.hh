@@ -5,13 +5,18 @@
 
 namespace nix {
 
-struct GlobalConfig : public AbstractConfig
+class GlobalConfig : public AbstractConfig
 {
+    void anchor() override;
+
+public:
     typedef std::vector<Config *> ConfigRegistrations;
 
     static ConfigRegistrations & configRegistrations();
 
     bool set(const std::string & name, const std::string & value) override;
+
+    bool isAppendSetting(const std::string & name) const override;
 
     void getSettings(std::map<std::string, SettingInfo> & res, bool overriddenOnly = false) const override;
 

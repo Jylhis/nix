@@ -1,3 +1,4 @@
+#include "nix/cmd/built-path.hh"
 #include "nix/store/globals.hh"
 #include "nix/cmd/installables.hh"
 #include "nix/cmd/installable-derived-path.hh"
@@ -14,6 +15,7 @@
 #include "nix/expr/eval.hh"
 #include "nix/expr/eval-settings.hh"
 #include "nix/store/store-api.hh"
+#include "nix/store/build.hh"
 #include "nix/main/shared.hh"
 #include "nix/flake/flake.hh"
 #include "nix/expr/eval-cache.hh"
@@ -135,7 +137,7 @@ MixFlakeOptions::MixFlakeOptions()
                 throw UsageError(
                     "--override-input was passed a zero-length input path, which would refer to the flake itself, not an input");
             lockFlags.inputOverrides.insert_or_assign(
-                std::move(*path), parseFlakeRef(fetchSettings, flakeRef, absPath(getCommandBaseDir()).string(), true));
+                std::move(*path), parseFlakeRef(flakeRef, absPath(getCommandBaseDir()).string(), true));
         }},
         .completer = {[&](AddCompletions & completions, size_t n, std::string_view prefix) {
             if (n == 0) {
@@ -176,7 +178,7 @@ MixFlakeOptions::MixFlakeOptions()
             auto flake = flake::lockFlake(
                 flakeSettings,
                 *evalState,
-                parseFlakeRef(fetchSettings, flakeRef, absPath(getCommandBaseDir()).string()),
+                parseFlakeRef(flakeRef, absPath(getCommandBaseDir()).string()),
                 {.writeLockFile = false});
             for (auto & [inputName, input] : flake.lockFile.root->inputs) {
                 auto input2 = flake.lockFile.findInput({inputName}); // resolve 'follows' nodes
@@ -188,7 +190,7 @@ MixFlakeOptions::MixFlakeOptions()
                     }
 
                     overrideRegistry(
-                        fetchers::Input::fromAttrs(fetchSettings, {{"type", "indirect"}, {"id", inputName}}),
+                        fetchers::Input::fromAttrs({{"type", "indirect"}, {"id", inputName}}),
                         input3->lockedRef.input,
                         extraAttrs);
                 }
@@ -341,8 +343,7 @@ void completeFlakeRefWithFragment(
             auto flakeRefS = std::string(prefix.substr(0, hash));
 
             // TODO: ideally this would use the command base directory instead of assuming ".".
-            auto flakeRef =
-                parseFlakeRef(fetchSettings, expandTilde(flakeRefS), std::filesystem::current_path().string());
+            auto flakeRef = parseFlakeRef(expandTilde(flakeRefS), std::filesystem::current_path().string());
 
             auto evalCache = openEvalCache(
                 *evalState, make_ref<flake::LockedFlake>(lockFlake(flakeSettings, *evalState, flakeRef, lockFlags)));
@@ -505,7 +506,7 @@ Installables SourceExprCommand::parseInstallables(ref<Store> store, std::vector<
 
             try {
                 auto [flakeRef, fragment] =
-                    parseFlakeRefWithFragment(fetchSettings, std::string{prefix}, absPath(getCommandBaseDir()));
+                    parseFlakeRefWithFragment(std::string{prefix}, absPath(getCommandBaseDir()));
                 result.push_back(
                     make_ref<InstallableFlake>(
                         this,
@@ -533,28 +534,6 @@ ref<Installable> SourceExprCommand::parseInstallable(ref<Store> store, const std
     auto installables = parseInstallables(store, {installable});
     assert(installables.size() == 1);
     return installables.front();
-}
-
-static SingleBuiltPath getBuiltPath(ref<Store> evalStore, ref<Store> store, const SingleDerivedPath & b)
-{
-    return std::visit(
-        overloaded{
-            [&](const SingleDerivedPath::Opaque & bo) -> SingleBuiltPath { return SingleBuiltPath::Opaque{bo.path}; },
-            [&](const SingleDerivedPath::Built & bfd) -> SingleBuiltPath {
-                auto drvPath = getBuiltPath(evalStore, store, *bfd.drvPath);
-                // Resolving this instead of `bfd` will yield the same result, but avoid duplicative work.
-                SingleDerivedPath::Built truncatedBfd{
-                    .drvPath = makeConstantStorePathRef(drvPath.outPath()),
-                    .output = bfd.output,
-                };
-                auto outputPath = resolveDerivedPath(*store, truncatedBfd, &*evalStore);
-                return SingleBuiltPath::Built{
-                    .drvPath = make_ref<SingleBuiltPath>(std::move(drvPath)),
-                    .output = {bfd.output, outputPath},
-                };
-            },
-        },
-        b.raw());
 }
 
 std::vector<BuiltPathWithResult> Installable::build(
@@ -652,36 +631,18 @@ std::vector<std::pair<ref<Installable>, BuiltPathWithResult>> Installable::build
         if (settings.printMissing)
             printMissing(store, pathsToBuild, lvlInfo);
 
-        auto buildResults = store->buildPathsWithResults(pathsToBuild, bMode, evalStore);
+        auto buildResults = store->getBuilder(evalStore)->buildPathsWithResults(pathsToBuild, bMode);
         throwBuildErrors(buildResults, *store);
         for (auto & buildResult : buildResults) {
-            // If we didn't throw, they must all be sucesses
-            auto & success = std::get<nix::BuildResult::Success>(buildResult.inner);
             for (auto & aux : backmap[buildResult.path]) {
-                std::visit(
-                    overloaded{
-                        [&](const DerivedPath::Built & bfd) {
-                            std::map<std::string, StorePath> outputs;
-                            for (auto & [outputName, realisation] : success.builtOutputs)
-                                outputs.emplace(outputName, realisation.outPath);
-                            res.push_back(
-                                {aux.installable,
-                                 {.path =
-                                      BuiltPath::Built{
-                                          .drvPath =
-                                              make_ref<SingleBuiltPath>(getBuiltPath(evalStore, store, *bfd.drvPath)),
-                                          .outputs = outputs,
-                                      },
-                                  .info = aux.info,
-                                  .result = buildResult}});
-                        },
-                        [&](const DerivedPath::Opaque & bo) {
-                            res.push_back(
-                                {aux.installable,
-                                 {.path = BuiltPath::Opaque{bo.path}, .info = aux.info, .result = buildResult}});
-                        },
+                res.push_back({
+                    aux.installable,
+                    BuiltPathWithResult{
+                        .path = toBuiltPath(buildResult, evalStore, store),
+                        .info = aux.info,
+                        .result = buildResult,
                     },
-                    buildResult.path.raw());
+                });
             }
         }
 
@@ -798,8 +759,7 @@ std::vector<FlakeRef> RawInstallablesCommand::getFlakeRefsForCompletion()
     std::vector<FlakeRef> res;
     res.reserve(rawInstallables.size());
     for (const auto & i : rawInstallables)
-        res.push_back(
-            parseFlakeRefWithFragment(fetchSettings, expandTilde(i), absPath(getCommandBaseDir()).string()).first);
+        res.push_back(parseFlakeRefWithFragment(expandTilde(i), absPath(getCommandBaseDir()).string()).first);
     return res;
 }
 
@@ -818,8 +778,7 @@ void RawInstallablesCommand::run(ref<Store> store)
 
 std::vector<FlakeRef> InstallableCommand::getFlakeRefsForCompletion()
 {
-    return {parseFlakeRefWithFragment(fetchSettings, expandTilde(_installable), absPath(getCommandBaseDir()).string())
-                .first};
+    return {parseFlakeRefWithFragment(expandTilde(_installable), absPath(getCommandBaseDir()).string()).first};
 }
 
 void InstallablesCommand::run(ref<Store> store, std::vector<std::string> && rawInstallables)

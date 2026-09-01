@@ -4,8 +4,6 @@ source common.sh
 
 TODO_NixOS
 
-clearStore
-
 cd "$TEST_ROOT"
 
 test_fetch_file () {
@@ -76,12 +74,12 @@ EOF
     # For backwards compatibility, flake inputs that correspond to the
     # old 'tarball' fetcher should still have their type set to 'tarball'
     assert (nodes.tarball_default_unpack.locked.type == "tarball");
-    # Unless explicitely specified, the 'unpack' parameter shouldn’t appear here
+    # Unless explicitly specified, the 'unpack' parameter shouldn’t appear here
     # because that would break older Nix versions
     assert (!nodes.tarball_default_unpack.locked ? unpack);
     assert (nodes.tarball_default_unpack.locked.narHash == "$input_directory_hash");
 
-    # Explicitely passing the unpack parameter should enforce the desired behavior
+    # Explicitly passing the unpack parameter should enforce the desired behavior
     assert (nodes.no_ext_explicit_unpack.locked.narHash == nodes.tarball_default_unpack.locked.narHash);
     assert (nodes.tarball_explicit_no_unpack.locked.narHash == nodes.no_ext_default_no_unpack.locked.narHash);
 
@@ -118,5 +116,36 @@ EOF
 EOF
 }
 
+# attrPos is fetchTree call pos
+test_fetch_file_attr_pos () {
+    echo pos_content > pos_input
+
+    cat > pos_test.nix <<EOF
+let
+  tree = builtins.fetchTree {
+    type = "file";
+    url = "file://$PWD/pos_input";
+  };
+  checkAttr = name:
+    builtins.addErrorContext "while checking the position of attribute '\${name}'" (
+      let
+        pos = builtins.unsafeGetAttrPos name tree;
+      in
+        assert pos != null;
+        assert pos.line == 2;
+        assert pos.file == "$PWD/pos_test.nix";
+        true
+    );
+in
+  assert tree?narHash; # sanity
+  assert tree?outPath; # sanity
+  assert builtins.all checkAttr (builtins.attrNames tree);
+  true
+EOF
+
+    [[ $(nix eval --impure --file pos_test.nix) == "true" ]]
+}
+
 test_fetch_file
 test_file_flake_input
+test_fetch_file_attr_pos

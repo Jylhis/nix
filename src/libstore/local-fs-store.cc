@@ -5,6 +5,10 @@
 
 namespace nix {
 
+void LocalFSStoreConfig::anchor() {}
+
+void LocalFSStore::anchor() {}
+
 LocalFSStoreConfig::LocalFSStoreConfig(const std::filesystem::path & rootDir, const Params & params)
     : StoreConfig(params, FilePathType::Native)
     /* Default `?root` from `rootDir` if non set
@@ -26,8 +30,14 @@ LocalFSStore::LocalFSStore(const Config & config)
 {
 }
 
+namespace {
+
 struct LocalStoreAccessor : SourceAccessor
 {
+private:
+    void anchor() override {};
+
+public:
     ref<SourceAccessor> accessor;
     ref<LocalFSStore> store;
     bool requireValidPath;
@@ -39,11 +49,31 @@ struct LocalStoreAccessor : SourceAccessor
     {
     }
 
-    void requireStoreObject(const CanonPath & path)
+    void requireStoreObject(const StorePath & storePath)
     {
-        auto [storePath, rest] = store->toStorePath(store->storeDir + path.abs());
         if (requireValidPath && !store->isValidPath(storePath))
             throw InvalidPath("path '%1%' is not a valid store path", store->printStorePath(storePath));
+    }
+
+    static StorePath getStoreObjectPath(const CanonPath & path)
+    {
+        /* See special handling of isRoot() in maybeLstat. */
+        if (path.isRoot())
+            throw BadStorePath("path '%1%' is not a valid store path", path);
+        return StorePath(*path.begin());
+    }
+
+    static std::optional<StorePath> maybeGetStoreObjectPath(const CanonPath & path)
+    try {
+        return getStoreObjectPath(path);
+    } catch (BadStorePath &) {
+        /* FIXME: Stop using exceptions for control flow. */
+        return std::nullopt;
+    }
+
+    void requireStoreObject(const CanonPath & path)
+    {
+        requireStoreObject(getStoreObjectPath(path));
     }
 
     std::optional<Stat> maybeLstat(const CanonPath & path) override
@@ -53,7 +83,13 @@ struct LocalStoreAccessor : SourceAccessor
         if (path.isRoot())
             return Stat{.type = tDirectory};
 
-        requireStoreObject(path);
+        /* Querying existence should not fail for things like
+           `/nix/store/foo.nix`. The store cannot contain such files (unless
+           some weird impurities sneak in, but that's UB from nix's PoV). */
+        auto maybeStorePath = maybeGetStoreObjectPath(path);
+        if (!maybeStorePath)
+            return std::nullopt;
+        requireStoreObject(*maybeStorePath);
         return accessor->maybeLstat(path);
     }
 
@@ -113,12 +149,9 @@ struct LocalStoreAccessor : SourceAccessor
     {
         return accessor->getLastModified();
     }
-
-    bool pathExists(const CanonPath & path) override
-    {
-        return accessor->pathExists(path);
-    }
 };
+
+} // namespace
 
 ref<SourceAccessor> LocalFSStore::getFSAccessor(bool requireValidPath)
 {
@@ -161,7 +194,7 @@ std::optional<std::string> LocalFSStore::getBuildLogExact(const StorePath & path
 
         else if (pathExists(logBz2Path)) {
             try {
-                return decompress("bzip2", readFile(logBz2Path));
+                return decompress(CompressionAlgo::bzip2, readFile(logBz2Path));
             } catch (Error &) {
             }
         }

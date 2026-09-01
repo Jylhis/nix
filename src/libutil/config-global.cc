@@ -4,6 +4,8 @@
 
 namespace nix {
 
+void GlobalConfig::anchor() {}
+
 GlobalConfig::ConfigRegistrations & GlobalConfig::configRegistrations()
 {
     static GlobalConfig::ConfigRegistrations configRegistrations;
@@ -18,6 +20,14 @@ bool GlobalConfig::set(const std::string & name, const std::string & value)
 
     unknownSettings.emplace(name, value);
 
+    return false;
+}
+
+bool GlobalConfig::isAppendSetting(const std::string & name) const
+{
+    for (auto & config : configRegistrations())
+        if (config->isAppendSetting(name))
+            return true;
     return false;
 }
 
@@ -47,7 +57,8 @@ std::string GlobalConfig::toKeyValue()
     std::map<std::string, Config::SettingInfo> settings;
     globalConfig.getSettings(settings);
     for (const auto & s : settings)
-        res += fmt("%s = %s\n", s.first, s.second.value);
+        if (!s.second.excludedFromFullSerialisation)
+            res += fmt("%s = %s\n", s.first, s.second.value);
     return res;
 }
 

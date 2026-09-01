@@ -2,10 +2,13 @@
 
 namespace nix {
 
-struct TeeLogger : Logger
+namespace {
+
+class TeeLogger final : public Logger
 {
     std::vector<std::unique_ptr<Logger>> loggers;
 
+public:
     TeeLogger(std::vector<std::unique_ptr<Logger>> && loggers)
         : loggers(std::move(loggers))
     {
@@ -29,13 +32,13 @@ struct TeeLogger : Logger
             logger->resume();
     };
 
-    void log(Verbosity lvl, std::string_view s) override
+    void log(Verbosity lvl, std::string_view s) noexcept override
     {
         for (auto & logger : loggers)
             logger->log(lvl, s);
     }
 
-    void logEI(const ErrorInfo & ei) override
+    void logEI(const ErrorInfo & ei) noexcept override
     {
         for (auto & logger : loggers)
             logger->logEI(ei);
@@ -46,20 +49,20 @@ struct TeeLogger : Logger
         Verbosity lvl,
         ActivityType type,
         const std::string & s,
-        const Fields & fields,
-        ActivityId parent) override
+        std::span<const Field> fields,
+        ActivityId parent) noexcept override
     {
         for (auto & logger : loggers)
             logger->startActivity(act, lvl, type, s, fields, parent);
     }
 
-    void stopActivity(ActivityId act) override
+    void stopActivity(ActivityId act) noexcept override
     {
         for (auto & logger : loggers)
             logger->stopActivity(act);
     }
 
-    void result(ActivityId act, ResultType type, const Fields & fields) override
+    void result(ActivityId act, ResultType type, std::span<const Field> fields) noexcept override
     {
         for (auto & logger : loggers)
             logger->result(act, type, fields);
@@ -93,6 +96,8 @@ struct TeeLogger : Logger
             logger->setPrintBuildLogs(printBuildLogs);
     }
 };
+
+} // namespace
 
 std::unique_ptr<Logger>
 makeTeeLogger(std::unique_ptr<Logger> mainLogger, std::vector<std::unique_ptr<Logger>> && extraLoggers)

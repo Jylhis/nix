@@ -22,6 +22,12 @@
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
+#elif defined(__FreeBSD__)
+// FreeBSD openat(..., AT_NOFOLLOW) on a symlink returns
+// `EMLINK`, not the posix-specified `ELOOP`.
+#  define NIX_ERR_OPEN_SYMLINK EMLINK
+#else
+#  define NIX_ERR_OPEN_SYMLINK ELOOP
 #endif
 
 namespace nix {
@@ -65,6 +71,7 @@ PosixStat fstatat(Descriptor dirFd, const std::filesystem::path & path);
 
 /**
  * Read a symlink relative to a directory file descriptor.
+ * On Linux, this also supports reading from O_PATH descriptors with CanonPath::root.
  *
  * @throws SystemError on any I/O errors.
  * @throws Interrupted if interrupted.
@@ -79,16 +86,6 @@ OsString readLinkAt(Descriptor dirFd, const CanonPath & path);
  *
  * Callers must not pass `O_NOFOLLOW` on Unix (enforced by assert);
  * this function owns symlink policy and handles the flag internally.
- *
- * @param dirFd Directory handle to open relative to
- * @param path Relative path (with no `..` or `.` components)
- *
- * @param desiredAccess (Windows) Windows `ACCESS_MASK`
- * @param createOptions (Windows) Windows create options
- * @param createDisposition (Windows) `FILE_OPEN`, `FILE_CREATE`, etc.
- *
- * @param flags (Unix) `O_*` flags (must not include `O_NOFOLLOW`)
- * @param mode (Unix) Mode for `O_{CREAT,TMPFILE}`
  *
  * @param dirFdCallback Callback invoked that gets the ownership of an intermediate directory fd.
  *
@@ -115,15 +112,15 @@ OsString readLinkAt(Descriptor dirFd, const CanonPath & path);
  *     to a `SymlinkNotAllowed` throw instead.
  */
 AutoCloseFD openFileEnsureBeneathNoSymlinks(
-    Descriptor dirFd,
-    const CanonPath & path,
+    Descriptor dirFd,       /** Directory handle to open relative to */
+    const CanonPath & path, /** path Relative path (with no `..` or `.` components) */
 #ifdef _WIN32
-    ACCESS_MASK desiredAccess,
-    ULONG createOptions,
-    ULONG createDisposition = FILE_OPEN,
+    ACCESS_MASK desiredAccess,           /** Windows `ACCESS_MASK` */
+    ULONG createOptions,                 /** Windows create options */
+    ULONG createDisposition = FILE_OPEN, /** `FILE_OPEN`, `FILE_CREATE`, etc. */
 #else
-    int flags,
-    mode_t mode = 0,
+    int flags,       /** `O_*` flags (must not include `O_NOFOLLOW`) */
+    mode_t mode = 0, /** Mode for `O_{CREAT,TMPFILE}` */
 #endif
     std::function<void(AutoCloseFD dirFd, CanonPath relPath)> dirFdCallback = nullptr);
 
@@ -152,7 +149,7 @@ openat2(Descriptor dirFd, const char * path, uint64_t flags, uint64_t mode, uint
 namespace unix {
 
 /**
- * Try to change the mode of file named by \ref path relative to the parent directory denoted by \ref dirFd.
+ * Try to change the mode of file named by @p path relative to the parent directory denoted by @p dirFd.
  *
  * @note When on linux without fchmodat2 support and without procfs mounted falls back to fchmodat without
  * AT_SYMLINK_NOFOLLOW, since it's the best we can do without failing.

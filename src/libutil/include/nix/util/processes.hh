@@ -97,7 +97,6 @@ struct ProcessOptions
     std::string errorPrefix = "";
     bool dieWithParent = true;
     bool runExitHandlers = false;
-    bool allowVfork = false;
     /**
      * use clone() with the specified flags (Linux only)
      */
@@ -124,6 +123,7 @@ struct RunOptions
     bool lookupPath = true;
     OsStrings args;
 #ifndef _WIN32
+    std::optional<std::string> argv0;
     std::optional<uid_t> uid;
     std::optional<uid_t> gid;
 #endif
@@ -141,12 +141,14 @@ void runProgram2(const RunOptions & options);
 
 class ExecError final : public CloneableError<ExecError, Error>
 {
+    void anchor() override;
+
 public:
     int status;
 
     template<typename... Args>
-    ExecError(int status, const Args &... args)
-        : CloneableError(args...)
+    ExecError(int status, Args &&... args)
+        : CloneableError(std::forward<Args>(args)...)
         , status(status)
     {
     }

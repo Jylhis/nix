@@ -10,6 +10,10 @@
 
 namespace nix {
 
+void LocalOverlayStoreConfig::anchor() {}
+
+void LocalOverlayStore::anchor() {}
+
 std::string LocalOverlayStoreConfig::doc()
 {
     return
@@ -75,14 +79,14 @@ LocalOverlayStore::LocalOverlayStore(ref<const Config> config)
     }
 }
 
-void LocalOverlayStore::registerDrvOutput(const Realisation & info)
+void LocalOverlayStore::registerDrvOutputUnchecked(const Realisation & info)
 {
     // First do queryRealisation on lower layer to populate DB
     auto res = lowerStore->queryRealisation(info.id);
     if (res)
-        LocalStore::registerDrvOutput({*res, info.id});
+        LocalStore::registerDrvOutputUnchecked({*res, info.id});
 
-    LocalStore::registerDrvOutput(info);
+    LocalStore::registerDrvOutputUnchecked(info);
 }
 
 void LocalOverlayStore::queryPathInfoUncached(

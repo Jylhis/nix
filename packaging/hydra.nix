@@ -33,7 +33,6 @@ let
   forAllPackages = forAllPackages' { };
   forAllPackages' =
     {
-      enableBindings ? false,
       enableDocs ? false, # already have separate attrs for these
     }:
     lib.genAttrs (
@@ -66,9 +65,6 @@ let
         "nix-json-schema-checks"
         "nix-clang-tidy-plugin"
       ]
-      ++ lib.optionals enableBindings [
-        "nix-perl-bindings"
-      ]
       ++ lib.optionals enableDocs [
         "nix-manual"
         "nix-manual-manpages-only"
@@ -85,7 +81,6 @@ rec {
     let
       arbitrarySystem = "x86_64-linux";
       listedPkgs = forAllPackages' {
-        enableBindings = true;
         enableDocs = true;
       } (_: null);
       actualPkgs = lib.concatMapAttrs (
@@ -176,8 +171,6 @@ rec {
             # Build without unity to catch include issues.
             withUnityBuild = false;
             nix-expr = super.nix-expr.override { enableGC = false; };
-            # Unclear how to make Perl bindings work with a dynamically linked ASAN.
-            nix-perl-bindings = null;
           }
         )
       );
@@ -201,8 +194,6 @@ rec {
         pkgs.nixComponents2.overrideScope (
           self: super: {
             withTSan = true;
-            # Dies at startup.
-            nix-perl-bindings = null;
             # TSan has issues with fork and threads.
             nix-functional-tests = super.nix-functional-tests.overrideAttrs { doCheck = false; };
           }
@@ -256,8 +247,52 @@ rec {
       ) (forAllSystems (system: components.${system}.${pkgName}))
     );
 
-  # Perl bindings for various platforms.
-  perlBindings = forAllSystems (system: nixpkgsFor.${system}.native.nixComponents2.nix-perl-bindings);
+  /**
+    Config with the fewest libraries, so that dependency optionality doesn't regress.
+  */
+  buildMinimal =
+    let
+      components = forAllSystems (
+        system:
+        nixpkgsFor.${system}.native.nixComponents2.overrideScope (
+          self: super: {
+            # No Boehm GC (libgc).
+            nix-expr = super.nix-expr.override { enableGC = false; };
+            # No Markdown rendering (lowdown).
+            nix-cmd = super.nix-cmd.override { enableMarkdown = false; };
+            # No S3 auth (aws-crt-cpp).
+            nix-store = super.nix-store.override { withAWS = false; };
+            # No mimalloc, no plugin C API.
+            nix-cli = super.nix-cli.override {
+              withMimalloc = false;
+              withPluginCApi = false;
+            };
+            # Also, temporarily stuff newer libgit2 for more coverage of ifdefs.
+            # Would be nicer for this to be somehow a private input, but we can't
+            # override nixDependencies easily.
+            libgit2 = self.callPackage (
+              { pkgs, fetchFromGitHub }:
+              pkgs.libgit2.overrideAttrs {
+                version = "2.0.0-rc.1";
+                src = fetchFromGitHub {
+                  owner = "libgit2";
+                  repo = "libgit2";
+                  rev = "ae45d0d168f7e8dbfdb8c623589cb51caac96ab3";
+                  hash = "sha256-3sbqHm37SOwBeFgtjI2DLN6kx1F7G2N1m6rRIkqDXNI=";
+                };
+              }
+            ) { };
+          }
+        )
+      );
+    in
+    forAllPackages (
+      pkgName:
+      lib.filterAttrs (
+        system: _do_not_touch:
+        pkgName == "nix-nswrapper" -> nixpkgsFor.${system}.native.stdenv.hostPlatform.isLinux
+      ) (forAllSystems (system: components.${system}.${pkgName}))
+    );
 
   # Binary tarball for various platforms, containing a Nix store
   # with the closure of 'nix' package, and the second half of
@@ -282,11 +317,12 @@ rec {
     self.hydraJobs.binaryTarball."x86_64-linux"
     self.hydraJobs.binaryTarball."i686-linux"
     self.hydraJobs.binaryTarball."aarch64-linux"
-    self.hydraJobs.binaryTarball."x86_64-darwin"
     self.hydraJobs.binaryTarball."aarch64-darwin"
     # Cross
     self.hydraJobs.binaryTarballCross."x86_64-linux"."armv6l-unknown-linux-gnueabihf"
     self.hydraJobs.binaryTarballCross."x86_64-linux"."armv7l-unknown-linux-gnueabihf"
+    self.hydraJobs.binaryTarballCross."x86_64-linux"."powerpc64-unknown-linux-gnuabielfv1"
+    self.hydraJobs.binaryTarballCross."x86_64-linux"."powerpc64le-unknown-linux-gnu"
     self.hydraJobs.binaryTarballCross."x86_64-linux"."riscv64-unknown-linux-gnu"
     self.hydraJobs.binaryTarballCross."x86_64-linux"."x86_64-unknown-freebsd"
   ];
@@ -304,7 +340,6 @@ rec {
       (
         linux64BitSystems
         ++ [
-          "x86_64-darwin"
           "aarch64-darwin"
         ]
       )

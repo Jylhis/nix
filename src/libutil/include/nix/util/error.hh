@@ -92,6 +92,7 @@ struct ErrorInfo
      * These may be rendered differently, so that users can distinguish them.
      */
     bool isFromExpr = false;
+    bool noIndent = false;
 
     /**
      * Exit status.
@@ -111,6 +112,10 @@ std::ostream & showErrorInfo(std::ostream & out, const ErrorInfo & einfo, bool s
  */
 class BaseError : public std::exception
 {
+    /* VTable anchor to avoid weak linkage of the vtable - it breaks
+       dynamic_cast across shared libraries on Darwin. */
+    virtual void anchor();
+
 protected:
     mutable ErrorInfo err;
 
@@ -205,7 +210,7 @@ public:
      *
      * @param pos Nullable source position to put in trace item
      * @param fs Format string, see `HintFmt`
-     * @param args... Format string arguments.
+     * @param args Format string arguments.
      */
     template<typename... Args>
     void addTrace(std::shared_ptr<const Pos> && pos, std::string_view fs, Args &&... args)
@@ -268,6 +273,7 @@ public:
 #define MakeError(newClass, superClass)                             \
     class newClass : public CloneableError<newClass, superClass>    \
     {                                                               \
+        void anchor() override;                                     \
     public:                                                         \
         using CloneableError<newClass, superClass>::CloneableError; \
     }
@@ -285,6 +291,8 @@ class SystemError : public CloneableError<SystemError, Error>
 {
     std::error_code errorCode;
     std::string errorDetails;
+
+    void anchor() override;
 
 protected:
 
@@ -377,6 +385,8 @@ public:
  */
 class SysError final : public CloneableError<SysError, SystemError>
 {
+    void anchor() override;
+
 public:
     int errNo;
 
@@ -499,6 +509,8 @@ namespace windows {
  */
 class WinError : public CloneableError<WinError, SystemError>
 {
+    void anchor() override;
+
 public:
     DWORD lastError;
 

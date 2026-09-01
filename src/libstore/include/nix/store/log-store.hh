@@ -7,6 +7,10 @@ namespace nix {
 
 struct LogStore : public virtual Store
 {
+private:
+    void anchor() override;
+
+public:
     inline static std::string operationName = "Build log storage and retrieval";
 
     /**
@@ -18,8 +22,6 @@ struct LogStore : public virtual Store
     virtual std::optional<std::string> getBuildLogExact(const StorePath & path) = 0;
 
     virtual void addBuildLog(const StorePath & path, std::string_view log) = 0;
-
-    static LogStore & require(Store & store);
 };
 
 } // namespace nix

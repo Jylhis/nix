@@ -3,6 +3,7 @@
 #include "nix/cmd/command.hh"
 #include "nix/main/common-args.hh"
 #include "nix/store/store-api.hh"
+#include "nix/store/build.hh"
 #include "nix/store/filetransfer.hh"
 #include "nix/expr/eval.hh"
 #include "nix/expr/eval-settings.hh"
@@ -113,7 +114,7 @@ struct CmdUpgradeNix : MixDryRun, StoreCommand
 
         {
             Activity act(*logger, lvlInfo, actUnknown, fmt("downloading '%s'...", store->printStorePath(storePath)));
-            store->ensurePath(storePath);
+            store->getBuilder()->ensurePath(storePath);
         }
 
         {
@@ -135,9 +136,8 @@ struct CmdUpgradeNix : MixDryRun, StoreCommand
                 fmt("installing '%s' into profile %s...", store->printStorePath(storePath), PathFmt(profileDir)));
 
             // FIXME: don't call an external process.
-            runProgram(
-                getNixBin("nix-env"),
-                false,
+            runNixBin(
+                "nix-env",
                 {
                     OS_STR("--profile"),
                     profileDir.native(),
@@ -201,7 +201,7 @@ struct CmdUpgradeNix : MixDryRun, StoreCommand
         auto state = std::make_shared<EvalState>(LookupPath{}, store, fetchSettings, evalSettings);
         auto v = state->allocValue();
         state->eval(state->parseExprFromString(res.data, state->rootPath(CanonPath("/no-such-path"))), *v);
-        Bindings & bindings = Bindings::emptyBindings;
+        const Bindings & bindings = Bindings::emptyBindings;
         auto v2 = findAlongAttrPath(*state, settings.thisSystem, bindings, *v).first;
 
         return store->parseStorePath(

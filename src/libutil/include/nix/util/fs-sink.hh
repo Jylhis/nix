@@ -14,6 +14,10 @@ namespace nix {
  */
 struct CreateRegularFileSink : virtual Sink
 {
+private:
+    void anchor() override;
+
+public:
     /**
      * If set to true, the sink will not be called with the contents
      * of the file. `preallocateContents()` will still be called to
@@ -32,6 +36,12 @@ struct CreateRegularFileSink : virtual Sink
 
 struct FileSystemObjectSink
 {
+private:
+    /* VTable anchor to avoid weak linkage of the vtable - it breaks
+       dynamic_cast across shared libraries on Darwin. */
+    virtual void anchor();
+
+public:
     virtual ~FileSystemObjectSink() = default;
 
     virtual void createDirectory(const CanonPath & path) = 0;
@@ -68,6 +78,10 @@ struct FileSystemObjectSink
  */
 struct ExtendedFileSystemObjectSink : virtual FileSystemObjectSink
 {
+private:
+    void anchor() override;
+
+public:
     /**
      * Create a hard link. The target must be the path of a previously
      * encountered file relative to the root of the FSO.
@@ -86,6 +100,10 @@ void copyRecursive(
  */
 struct NullFileSystemObjectSink : FileSystemObjectSink
 {
+private:
+    void anchor() override;
+
+public:
     void createDirectory(const CanonPath & path) override {}
 
     void createSymlink(const CanonPath & path, const std::string & target) override {}
@@ -93,11 +111,19 @@ struct NullFileSystemObjectSink : FileSystemObjectSink
     void createRegularFile(const CanonPath & path, fun<void(CreateRegularFileSink &)>) override;
 };
 
+class RestoreSinkHooks;
+
 /**
  * Write files at the given path
  */
 struct RestoreSink : FileSystemObjectSink
 {
+private:
+    void anchor() override;
+
+    RestoreSinkHooks * hooks = nullptr;
+
+public:
     std::filesystem::path dstPath;
     /**
      * File descriptor for the directory located at dstPath. Used for *at
@@ -111,11 +137,15 @@ struct RestoreSink : FileSystemObjectSink
     AutoCloseFD dirFd;
     bool startFsync = false;
 
-    explicit RestoreSink(bool startFsync)
-        : startFsync{startFsync}
+    explicit RestoreSink(bool startFsync, RestoreSinkHooks * hooks = nullptr)
+        : hooks{hooks}
+        , startFsync{startFsync}
     {
     }
 
+    /**
+     * @todo Remove. Only keep the callback driven function (at least for recursive traversal).
+     */
     void createDirectory(const CanonPath & path) override;
 
     void createDirectory(const CanonPath & path, DirectoryCreatedCallback callback) override;
@@ -126,12 +156,60 @@ struct RestoreSink : FileSystemObjectSink
 };
 
 /**
+ * Hooks invoked when filesystem objects created by `RestoreSink` are complete,
+ * so callers can post-process them (e.g. metadata canonicalisation). By doing
+ * this in the hooks, the whole operation can be done in a single recursive tree
+ * traversal during unpacking.
+ *
+ * @todo Do something on Windows.
+ */
+class RestoreSinkHooks
+{
+    virtual void anchor();
+
+public:
+    virtual ~RestoreSinkHooks() = default;
+
+    /**
+     * @brief Called when the callback passed to @ref nix::RestoreSink::createDirectory()
+     * returns.
+     *
+     * Naturally, this means that recursive copying and @ref nix::restorePath()
+     * drives these in post-order when walking up the directory tree. This makes
+     * it suitable for canonicalising permissions of directories.
+     *
+     * @param dirFd File descriptor of the directory.
+     */
+    virtual void directoryDone(Descriptor dirFd) = 0;
+
+    /**
+     * Called when the callback passed to @ref nix::RestoreSink::createRegularFile() returns.
+     *
+     * @param fd File descriptor of the file.
+     * @param executable Whether @ref nix::CreateRegularFileSink::isExecutable() was called.
+     */
+    virtual void regularFileCreated(Descriptor fd, bool executable) = 0;
+
+    /**
+     * @brief Called after a symlink is created.
+     *
+     * @param parentFd Directory file descriptor of the symlink parent (immediate one).
+     * @param name Relative path of the symlink beneath the parent directory.
+     */
+    virtual void symlinkCreated(Descriptor parentFd, const CanonPath & name) = 0;
+};
+
+/**
  * Restore a single file at the top level, passing along
  * `receiveContents` to the underlying `Sink`. For anything but a single
  * file, set `regular = true` so the caller can fail accordingly.
  */
 struct RegularFileSink : FileSystemObjectSink
 {
+private:
+    void anchor() override;
+
+public:
     bool regular = true;
     Sink & sink;
 
@@ -142,11 +220,13 @@ struct RegularFileSink : FileSystemObjectSink
 
     void createDirectory(const CanonPath & path) override
     {
+        /* FIXME: Throw an error here. */
         regular = false;
     }
 
     void createSymlink(const CanonPath & path, const std::string & target) override
     {
+        /* FIXME: Throw an error here. */
         regular = false;
     }
 

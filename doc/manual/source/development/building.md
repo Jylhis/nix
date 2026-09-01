@@ -130,12 +130,13 @@ Nix can be built for various platforms, as specified in [`flake.nix`]:
 [`flake.nix`]: https://github.com/nixos/nix/blob/master/flake.nix
 
 - `x86_64-linux`
-- `x86_64-darwin`
 - `i686-linux`
 - `aarch64-linux`
 - `aarch64-darwin`
 - `armv6l-linux`
 - `armv7l-linux`
+- `powerpc64-linux` (ELFv1 ABI)
+- `powerpc64le-linux`
 - `riscv64-linux`
 
 In order to build Nix for a different platform than the one you're currently
@@ -162,6 +163,8 @@ $ nix build .#packages.aarch64-linux.default
 Cross-compiled builds are available for:
 - `armv6l-linux`
 - `armv7l-linux`
+- `powerpc64-linux` (ELFv1 ABI)
+- `powerpc64le-linux`
 - `riscv64-linux`
 Add more [system types](#system-type) to `crossSystems` in `flake.nix` to bootstrap Nix on unsupported platforms.
 
@@ -199,23 +202,7 @@ Nix uses a string with the following format to identify the *system type* or *pl
 <cpu>-<os>[-<abi>]
 ```
 
-It is set when Nix is compiled for the given system, and based on the output of Meson's [`host_machine` information](https://mesonbuild.com/Reference-manual_builtin_host_machine.html)>
-
-```
-<cpu>-<vendor>-<os>[<version>][-<abi>]
-```
-
-When cross-compiling Nix with Meson for local development, you need to specify a [cross-file](https://mesonbuild.com/Cross-compilation.html) using the `--cross-file` option. Cross-files define the target architecture and toolchain. When cross-compiling Nix with Nix, Nixpkgs takes care of this for you.
-
-In the nix flake we also have some cross-compilation targets available:
-
-```
-nix build .#nix-everything-riscv64-unknown-linux-gnu
-nix build .#nix-everything-armv7l-unknown-linux-gnueabihf
-nix build .#nix-everything-armv7l-unknown-linux-gnueabihf
-nix build .#nix-everything-x86_64-unknown-freebsd
-nix build .#nix-everything-x86_64-w64-mingw32
-```
+It is set when Nix is compiled for the given system, and based on the output of Meson's [`host_machine` information](https://mesonbuild.com/Reference-manual_builtin_host_machine.html).
 
 For historic reasons and backward-compatibility, some CPU and OS identifiers are translated as follows:
 
@@ -231,6 +218,19 @@ For historic reasons and backward-compatibility, some CPU and OS identifiers are
 | `mips64`                    | `little`                | `mips64el`          |
 | `mips`                      | `big`                   | `mips`              |
 | `mips64`                    | `big`                   | `mips64`            |
+
+
+When cross-compiling Nix with Meson for local development, you need to specify a [cross-file](https://mesonbuild.com/Cross-compilation.html) using the `--cross-file` option. Cross-files define the target architecture and toolchain. When cross-compiling Nix with Nix, Nixpkgs takes care of this for you.
+
+In the nix flake we also have some cross-compilation targets available:
+
+```
+nix build .#nix-everything-riscv64-unknown-linux-gnu
+nix build .#nix-everything-armv7l-unknown-linux-gnueabihf
+nix build .#nix-everything-armv7l-unknown-linux-gnueabihf
+nix build .#nix-everything-x86_64-unknown-freebsd
+nix build .#nix-everything-x86_64-w64-mingw32
+```
 
 ## Compilation environments
 

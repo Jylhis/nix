@@ -233,19 +233,11 @@ ref<eval_cache::EvalCache> openEvalCache(EvalState & state, ref<const LockedFlak
 
 } // namespace flake
 
-void emitTreeAttrs(
-    EvalState & state,
-    const StorePath & storePath,
-    const fetchers::Input & input,
-    Value & v,
-    bool emptyRevFallback = false,
-    bool forceDirty = false);
-
 /**
  * An internal builtin similar to `fetchTree`, except that it
  * always treats the input as final (i.e. no attributes can be
  * added/removed/changed).
  */
-void prim_fetchFinalTree(EvalState & state, const PosIdx pos, Value ** args, Value & v);
+void prim_fetchFinalTree(EvalState & state, CallSite callSite, Value * const * args, Value & v);
 
 } // namespace nix

@@ -1,7 +1,7 @@
 {
   description = "The purely functional package manager";
 
-  inputs.nixpkgs.url = "https://channels.nixos.org/nixos-25.11/nixexprs.tar.xz";
+  inputs.nixpkgs.url = "https://channels.nixos.org/nixos-26.05/nixexprs.tar.xz";
 
   inputs.nixpkgs-regression.url = "github:NixOS/nixpkgs/215d4d0fd80ca5163643b03a33fde804a29cc1e2";
   inputs.nixpkgs-23-11.url = "github:NixOS/nixpkgs/a62e6edd6d5e1fa0329b8653c801147986f8d446";
@@ -16,10 +16,8 @@
   # work around https://github.com/NixOS/nix/issues/7730
   inputs.flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
   inputs.git-hooks-nix.inputs.nixpkgs.follows = "nixpkgs";
-  inputs.git-hooks-nix.inputs.nixpkgs-stable.follows = "nixpkgs";
   # work around 7730 and https://github.com/NixOS/nix/issues/7807
   inputs.git-hooks-nix.inputs.flake-compat.follows = "";
-  inputs.git-hooks-nix.inputs.gitignore.follows = "";
 
   outputs =
     inputs@{
@@ -41,7 +39,6 @@
       ];
       linuxSystems = linux32BitSystems ++ linux64BitSystems;
       darwinSystems = [
-        "x86_64-darwin"
         "aarch64-darwin"
       ];
       systems = linuxSystems ++ darwinSystems;
@@ -49,6 +46,8 @@
       crossSystems = [
         "armv6l-unknown-linux-gnueabihf"
         "armv7l-unknown-linux-gnueabihf"
+        "powerpc64-unknown-linux-gnuabielfv1"
+        "powerpc64le-unknown-linux-gnu"
         "riscv64-unknown-linux-gnu"
         # Disabled because of https://github.com/NixOS/nixpkgs/issues/344423
         # "x86_64-unknown-netbsd"
@@ -114,7 +113,7 @@
                       config = crossSystem;
                     }
                     // lib.optionalAttrs (crossSystem == "x86_64-w64-mingw32") {
-                      emulator = pkgs: "${pkgs.buildPackages.wineWow64Packages.stable_11}/bin/wine";
+                      emulator = pkgs: "${pkgs.buildPackages.wineWow64Packages.stable}/bin/wine";
                     };
                 overlays = [
                   (overlayFor (pkgs: pkgs.${stdenv}))
@@ -136,85 +135,17 @@
         a given `pkgs` and `getStdenv`.
       */
       packageSetsFor =
-        let
-          /**
-            Removes a prefix from the attribute names of a set of splices.
-            This is a completely uninteresting and exists for compatibility only.
-
-            Example:
-            ```nix
-            renameSplicesFrom "pkgs" { pkgsBuildBuild = ...; ... }
-            => { buildBuild = ...; ... }
-            ```
-          */
-          renameSplicesFrom = prefix: x: {
-            buildBuild = x."${prefix}BuildBuild";
-            buildHost = x."${prefix}BuildHost";
-            buildTarget = x."${prefix}BuildTarget";
-            hostHost = x."${prefix}HostHost";
-            hostTarget = x."${prefix}HostTarget";
-            targetTarget = x."${prefix}TargetTarget";
-          };
-
-          /**
-            Adds a prefix to the attribute names of a set of splices.
-            This is a completely uninteresting and exists for compatibility only.
-
-            Example:
-            ```nix
-            renameSplicesTo "self" { buildBuild = ...; ... }
-            => { selfBuildBuild = ...; ... }
-            ```
-          */
-          renameSplicesTo = prefix: x: {
-            "${prefix}BuildBuild" = x.buildBuild;
-            "${prefix}BuildHost" = x.buildHost;
-            "${prefix}BuildTarget" = x.buildTarget;
-            "${prefix}HostHost" = x.hostHost;
-            "${prefix}HostTarget" = x.hostTarget;
-            "${prefix}TargetTarget" = x.targetTarget;
-          };
-
-          /**
-            Takes a function `f` and returns a function that applies `f` pointwise to each splice.
-
-            Example:
-            ```nix
-            mapSplices (x: x * 10) { buildBuild = 1; buildHost = 2; ... }
-            => { buildBuild = 10; buildHost = 20; ... }
-            ```
-          */
-          mapSplices =
-            f:
-            {
-              buildBuild,
-              buildHost,
-              buildTarget,
-              hostHost,
-              hostTarget,
-              targetTarget,
-            }:
-            {
-              buildBuild = f buildBuild;
-              buildHost = f buildHost;
-              buildTarget = f buildTarget;
-              hostHost = f hostHost;
-              hostTarget = f hostTarget;
-              targetTarget = f targetTarget;
-            };
-
-        in
         args@{
           pkgs,
           getStdenv ? pkgs: pkgs.stdenv,
         }:
         let
-          nixComponentsSplices = mapSplices (
+          nixComponentsSplices = lib.mapCrossIndex (
             pkgs': (packageSetsFor (args // { pkgs = pkgs'; })).nixComponents
-          ) (renameSplicesFrom "pkgs" pkgs);
-          nixDependenciesSplices = mapSplices (
+          ) (lib.renameCrossIndexFrom "pkgs" pkgs);
+          nixDependenciesSplices = lib.mapCrossIndex (
             pkgs': (packageSetsFor (args // { pkgs = pkgs'; })).nixDependencies
-          ) (renameSplicesFrom "pkgs" pkgs);
+          ) (lib.renameCrossIndexFrom "pkgs" pkgs);
 
           # A new scope, so that we can use `callPackage` to inject our own interdependencies
           # without "polluting" the top level "`pkgs`" attrset.
@@ -227,7 +158,7 @@
                 inherit (nixDependencies) newScope;
               }
               {
-                otherSplices = renameSplicesTo "self" nixComponentsSplices;
+                otherSplices = lib.renameCrossIndexTo "self" nixComponentsSplices;
                 f = import ./packaging/components.nix {
                   inherit (pkgs) lib;
                   inherit officialRelease;
@@ -246,7 +177,7 @@
                 inherit (pkgs) newScope; # layered directly on pkgs, unlike nixComponents2 above
               }
               {
-                otherSplices = renameSplicesTo "self" nixDependenciesSplices;
+                otherSplices = lib.renameCrossIndexTo "self" nixDependenciesSplices;
                 f = import ./packaging/dependencies.nix {
                   inherit inputs pkgs;
                   stdenv = getStdenv pkgs;
@@ -328,11 +259,8 @@
         // (lib.optionalAttrs (builtins.elem system linux64BitSystems)) {
           dockerImage = self.hydraJobs.dockerImage.${system};
         }
-        // (lib.optionalAttrs (!(builtins.elem system linux32BitSystems))) {
-          # Some perl dependencies are broken on i686-linux.
-          # Since the support is only best-effort there, disable the perl
-          # bindings
-          perlBindings = self.hydraJobs.perlBindings.${system};
+        // (lib.optionalAttrs (system == "x86_64-linux")) {
+          fuzzing-engine = nixpkgsFor.${system}.native.callPackage ./tests/fuzzing-engine { };
         }
         # Add "passthru" tests
         //
@@ -419,10 +347,6 @@
               };
 
               "nix-json-schema-checks" = {
-                supportsCross = false;
-              };
-
-              "nix-perl-bindings" = {
                 supportsCross = false;
               };
 

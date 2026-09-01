@@ -45,6 +45,11 @@ MakeError(NotARegularFile, SourceAccessorError);
  */
 struct SourceAccessor : std::enable_shared_from_this<SourceAccessor>
 {
+private:
+    /* VTable anchor to avoid weak linkage of the vtable - it breaks
+     * dynamic_cast across shared libraries on Darwin. */
+    virtual void anchor() = 0;
+public:
     const size_t number;
 
     std::string displayPrefix, displaySuffix;
@@ -76,8 +81,16 @@ struct SourceAccessor : std::enable_shared_from_this<SourceAccessor>
      * @note subclasses of `SourceAccessor` need to implement at least
      * one of the `readFile()` variants.
      */
-    virtual void readFile(const CanonPath & path, Sink & sink, fun<void(uint64_t)> sizeCallback = [](uint64_t size) {});
+    virtual void
+    readFile(const CanonPath & path, Sink & sink, fun<void(uint64_t)> sizeCallback = [](uint64_t size) {}) = 0;
 
+    /**
+     * @brief Check whether a file exists at @p path.
+     *
+     * @todo Consider making this non-virtual, since the evaluator uses
+     * maybeLstat as an indication that a file exists always (for positive
+     * caching purposes).
+     */
     virtual bool pathExists(const CanonPath & path);
 
     enum Type {
@@ -139,7 +152,7 @@ struct SourceAccessor : std::enable_shared_from_this<SourceAccessor>
     virtual DirEntries readDirectory(const CanonPath & path) = 0;
 
     /**
-     * Variation of readDirectory that receives a SourceAccessor possibly scoped to \ref dirPath.
+     * Variation of readDirectory that receives a SourceAccessor possibly scoped to @p dirPath.
      * Primary meant for recursive traversal functions that would benefit from *at-style syscalls
      * relative to a particular directory.
      *
@@ -248,8 +261,11 @@ ref<SourceAccessor> makeEmptySourceAccessor();
  */
 MakeError(RestrictedPathError, Error);
 
-struct SymlinkNotAllowed final : public CloneableError<SymlinkNotAllowed, Error>
+class SymlinkNotAllowed final : public CloneableError<SymlinkNotAllowed, Error>
 {
+    void anchor() override;
+
+public:
     CanonPath path;
 
     SymlinkNotAllowed(CanonPath path)

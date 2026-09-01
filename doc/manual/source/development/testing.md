@@ -9,7 +9,7 @@ You can build it yourself:
 
 ```
 # nix build .#hydraJobs.coverage
-# xdg-open ./result/coverage/index.html
+# xdg-open ./result/index.html
 ```
 
 [Extensive records of build metrics](https://hydra.nixos.org/job/nix/master/coverage#tabs-charts), such as test coverage over time, are also available online.
@@ -34,31 +34,28 @@ The unit tests are defined using the [googletest] and [rapidcheck] frameworks.
 > │   ├── value/context.cc
 > │   …
 > │
-> ├── tests
-> │   │
+> ├── libutil-tests
+> │   ├── meson.build
 > │   …
-> │   ├── libutil-tests
+> │   ├── data
+> │   │   ├── git/tree.txt
+> │       …
+> │
+> ├── libexpr-test-support
+> │   ├── meson.build
+> │   ├── include/nix/expr
 > │   │   ├── meson.build
-> │   │   …
-> │   │   └── data
-> │   │       ├── git/tree.txt
-> │   │       …
-> │   │
-> │   ├── libexpr-test-support
-> │   │   ├── meson.build
-> │   │   ├── include/nix/expr
-> │   │   │   ├── meson.build
-> │   │   │   └── tests
-> │   │   │       ├── value/context.hh
-> │   │   │       …
 > │   │   └── tests
-> │   │       ├── value/context.cc
+> │   │       ├── value/context.hh
 > │   │       …
-> │   │
-> │   ├── libexpr-tests
-> │   …   ├── meson.build
+> │   ├── tests
 > │       ├── value/context.cc
 > │       …
+> │
+> ├── libexpr-tests
+> │   ├── meson.build
+> │   ├── value/context.cc
+> │    …
 > …
 > ```
 
@@ -257,15 +254,6 @@ GNU gdb (GDB) 12.1
 One can debug the Nix invocation in all the usual ways.
 For example, enter `run` to start the Nix invocation.
 
-### Troubleshooting
-
-Sometimes running tests in the development shell may leave artefacts in the local repository.
-To remove any traces of that:
-
-```console
-git clean -x --force tests
-```
-
 ### Characterisation testing { #characterisation-testing-functional }
 
 Occasionally, Nix utilizes a technique called [Characterisation Testing](https://en.wikipedia.org/wiki/Characterization_test) as part of the functional tests.
@@ -311,78 +299,121 @@ Generally, this build is sufficient, but in nightly or CI we also test the attri
 
 The integration tests are defined in the Nix flake under the `hydraJobs.tests` attribute.
 These tests include everything that needs to interact with external services or run Nix in a non-trivial distributed setup.
-Because these tests are expensive and require more than what the standard github-actions setup provides, they only run on the master branch (on <https://hydra.nixos.org/jobset/nix/master>).
+Because these tests are expensive and require more than what the standard github-actions setup provides, most of them only run on the master branch (on <https://hydra.nixos.org/jobset/nix/master>).
 
 You can run them manually with `nix build .#hydraJobs.tests.{testName}` or `nix-build -A hydraJobs.tests.{testName}`.
 
+## Fuzzing
+
+The project uses [`libFuzzer`](https://llvm.org/docs/LibFuzzer.html) and LLVM coverage instrumentation to fuzz sensitive pieces of code.
+The harnesses reside in corresponding `-tests` subprojects (e.g. `src/libutil-tests/fuzz`).
+The `fuzzers` option builds the harnesses independently of `unit-tests`; set `unit-tests=false` for a fuzzer-only build.
+The `fuzzing-engine` option accepts one compiler-driver argument for linking an external fuzzing engine.
+If `fuzzing-engine` is empty, Meson requires Clang and `fuzzer-no-link` in `b_sanitize`.
+The compiler driver then links the harnesses with libFuzzer and libstdc++.
+
+```shell
+nix develop .#native-clangStdenv
+appendToVar mesonFlags "-Dunit-tests=false"
+appendToVar mesonFlags "-Dfuzzers=true"
+appendToVar mesonFlags "-Db_sanitize=address,undefined,fuzzer-no-link"
+# Clang sanitizer/shared-library workaround: https://github.com/mesonbuild/meson/issues/764
+appendToVar mesonFlags "-Db_lundef=false"
+appendToVar mesonFlags "-Dlibexpr:gc=disabled" # Because Boehm doesn't play well with ASan
+configurePhase
+buildPhase
+```
+
+To use an external fuzzing engine, set `fuzzing-engine`:
+
+```shell
+mesonFlagsArray+=(
+  "-Dunit-tests=false"
+  "-Dfuzzers=true"
+  "-Dfuzzing-engine=$LIB_FUZZING_ENGINE"
+)
+```
+
+Nix passes this value as one compiler-driver argument.
+The caller must also choose a compatible compiler and C++ runtime and provide any required instrumentation and sanitizer flags.
+
+If you want to collect coverage metrics you also need to specify the following compiler flags before running the `configurePhase`:
+
+```shell
+export CXXFLAGS="-fprofile-instr-generate -fcoverage-mapping"
+export CCFLAGS="-fprofile-instr-generate -fcoverage-mapping"
+```
+
+For now, the testbenches are mostly rudimentary and are supposed to catch memory safety bugs, but fuzzing is also crucial for validating invariants.
+Contributions improving harnesses and corpus/dictionaries are welcome.
+
+To run the harness (e.g. for NAR deserialisation) you can execute the following:
+
+```shell
+export LLVM_PROFILE_FILE="default.%p.profraw"
+mkdir /tmp/parse-dump
+build/src/libutil-tests/fuzz/harnesses/fuzz-parse-dump -runs=1000000 -max_len=65536 -dict=./src/libutil-tests/fuzz/data/nars.dict /tmp/parse-dump ./src/libutil-tests/fuzz/data/nars
+```
+
+Note that to achieve better results, tuning `libFuzzer` parameters or improvements to the initial corpus and dictionaries is likely required. For further information consult the [libFuzzer manual](https://llvm.org/docs/LibFuzzer.html).
+
+If you want to inspect the coverage, wait for the harness to run to completion (interrupting it won't produce a non-empty `.profraw` file) and assemble the final coverage report:
+
+```
+llvm-profdata merge -sparse *.profraw -o default.profdata
+llvm-cov show build/src/libutil/libnixutil.so -instr-profile=default.profdata -format=html -output-dir cov-html
+xdg-open cov-html/index.html
+```
+
+If you have found a memory safety issue using fuzzing, consider reporting it [privately](https://github.com/NixOS/nix/security/) if you deem the issue to be security relevant.
+
+### Checks that defeat fuzzing
+
+Fuzzing is crucial for validating invariants, but a few invariants are ones a fuzzer can never satisfy.
+A check that a field equals a cryptographic hash of other fields is the usual case: passing it requires a hash preimage, so the code below the check becomes *unreachable* to the fuzzer rather than merely hard to reach.
+This is different from a check that is only awkward to satisfy --- sorted keys, balanced delimiters, no redundant escapes --- which a coverage-guided fuzzer will learn to get past on its own.
+Only the former should be gated.
+
+Such checks are compiled out under `FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION`, e.g.:
+
+```c++
+#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+    if (path != computedPath)
+        throw FormatError(...);
+#endif
+```
+
+The macro name is a convention from [OSS-Fuzz](https://google.github.io/oss-fuzz/) and libFuzzer.
+`nix-meson-build-support/common/meson.build` defines it for every subproject when `fuzzer-no-link` is in `b_sanitize`, which is exactly when a fuzzer-instrumented build is being made.
+Builds using an external `fuzzing-engine` are expected to pass it themselves, as OSS-Fuzz does.
+
+Anything gated this way is no longer exercised by the fuzzer, so it must be covered by a unit test instead.
+For an example of both halves, see the fixed-output derivation path check in `parseOutput` (`src/libstore/derivation/aterm.cc`) and its test `CAFixedPathMismatch`.
+
 ## Installer tests
 
-After a one-time setup, the Nix repository's GitHub Actions continuous integration (CI) workflow can test the installer each time you push to a branch.
+GitHub Actions CI in the Nix repository also tests the installer on PRs. It does not require additional setup and utilises [GHA Artifacts](https://docs.github.com/en/actions/tutorials/store-and-share-data) and can be run in any Nix repository fork.
 
-Creating a Cachix cache for your installer tests and adding its authorisation token to GitHub enables [two installer-specific jobs in the CI workflow](https://github.com/NixOS/nix/blob/88a45d6149c0e304f6eb2efcc2d7a4d0d569f8af/.github/workflows/ci.yml#L50-L91):
-
-- The `installer` job generates installers for the platforms below and uploads them to your Cachix cache:
+- The `tests` job generates installers for the platforms below and uploads them as an artifact:
   - `x86_64-linux`
-  - `armv6l-linux`
-  - `armv7l-linux`
-  - `x86_64-darwin`
+  - `aarch64-darwin`
 
-- The `installer_test` job (which runs on `ubuntu-24.04` and `macos-14`) will try to install Nix with the cached installer and run a trivial Nix command.
+- The `installer_test` job (which runs on Linux and macOS) will try to install Nix with the cached installer and run a trivial Nix command.
+- Both the scripted installer and the [standalone Rust-based installer](https://github.com/NixOS/nix-installer) are tested.
 
-### One-time setup
-
-1. Have a GitHub account with a fork of the [Nix repository](https://github.com/NixOS/nix).
-2. At cachix.org:
-    - Create or log in to an account.
-    - Create a Cachix cache using the format `<github-username>-nix-install-tests`.
-    - Navigate to the new cache > Settings > Auth Tokens.
-    - Generate a new Cachix auth token and copy the generated value.
-3. At github.com:
-    - Navigate to your Nix fork > Settings > Secrets > Actions > New repository secret.
-    - Name the secret `CACHIX_AUTH_TOKEN`.
-    - Paste the copied value of the Cachix cache auth token.
+You can generate the installer tarball and script manually by running `nix build .#hydraJobs.installerScriptForGHA.<system-double>`.
 
 ## Working on documentation
 
 ### Using the CI-generated installer for manual testing
 
-After the CI run completes, you can check the output to extract the installer URL:
+After the CI run completes, you can check the output to extract the installer artifact:
 1. Click into the detailed view of the CI run.
-2. Click into any `installer_test` run (the URL you're here to extract will be the same in all of them).
-3. Click into the `Run cachix/install-nix-action@v...` step and click the detail triangle next to the first log line (it will also be `Run cachix/install-nix-action@v...`)
-4. Copy the value of `install_url`
-5. To generate an install command, plug this `install_url` and your GitHub username into this template:
+2. Scroll down to `Artifacts` section.
+3. Download the corresponding installer artifact (`installer-darwin` for `aarch64-darwin` and `installer-linux` for `x86_64-linux`).
+4. Unpack the downloaded `.zip` artifact.
+5. To generate an install command, plug the path to the unpacked artifact into this template:
 
     ```console
-    curl -L <install_url> | sh -s -- --tarball-url-prefix https://<github-username>-nix-install-tests.cachix.org/serve
+    sh <path/to/artifact>/install --tarball-url-prefix file://<path/to/artifact>
     ```
-
-<!-- #### Manually generating test installers
-
-There's obviously a manual way to do this, and it's still the only way for
-platforms that lack GA runners.
-
-I did do this back in Fall 2020 (before the GA approach encouraged here). I'll
-sketch what I recall in case it encourages someone to fill in detail, but: I
-didn't know what I was doing at the time and had to fumble/ask around a lot--
-so I don't want to uphold any of it as "right". It may have been dumb or
-the _hard_ way from the getgo. Fundamentals may have changed since.
-
-Here's the build command I used to do this on and for x86_64-darwin:
-nix build --out-link /tmp/foo ".#checks.x86_64-darwin.binaryTarball"
-
-I used the stable out-link to make it easier to script the next steps:
-link=$(readlink /tmp/foo)
-cp $link/*-darwin.tar.xz ~/somewheres
-
-I've lost the last steps and am just going from memory:
-
-From here, I think I had to extract and modify the `install` script to point
-it at this tarball (which I scped to my own site, but it might make more sense
-to just share them locally). I extracted this script once and then just
-search/replaced in it for each new build.
-
-The installer now supports a `--tarball-url-prefix` flag which _may_ have
-solved this need?
--->
-

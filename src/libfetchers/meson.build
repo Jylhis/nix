@@ -8,7 +8,7 @@ project(
     'warning_level=1',
     'errorlogs=true', # Please print logs for tests that fail
   ],
-  meson_version : '>= 1.1',
+  meson_version : '>= 1.8',
   license : 'LGPL-2.1-or-later',
 )
 
@@ -48,6 +48,7 @@ sources = files(
   'input-cache.cc',
   'mercurial.cc',
   'path.cc',
+  'register-library-versions.cc',
   'registry.cc',
   'tarball.cc',
 )

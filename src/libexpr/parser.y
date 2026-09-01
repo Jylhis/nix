@@ -297,8 +297,8 @@ expr_pipe_into
 expr_op
   : '!' expr_op %prec NOT { $$ = state->exprs.add<ExprOpNot>($2); }
   | '-' expr_op %prec NEGATE { $$ = state->exprs.add<ExprCall>(CUR_POS, state->exprs.add<ExprVar>(state->s.sub), {state->exprs.add<ExprInt>(0), $2}); }
-  | expr_op EQ expr_op { $$ = state->exprs.add<ExprOpEq>($1, $3); }
-  | expr_op NEQ expr_op { $$ = state->exprs.add<ExprOpNEq>($1, $3); }
+  | expr_op EQ expr_op { $$ = state->exprs.add<ExprOpEq>(state->at(@2), $1, $3); }
+  | expr_op NEQ expr_op { $$ = state->exprs.add<ExprOpNEq>(state->at(@2), $1, $3); }
   | expr_op '<' expr_op { $$ = state->exprs.add<ExprCall>(state->at(@2), state->exprs.add<ExprVar>(state->s.lessThan), {$1, $3}); }
   | expr_op LEQ expr_op { $$ = state->exprs.add<ExprOpNot>(state->exprs.add<ExprCall>(state->at(@2), state->exprs.add<ExprVar>(state->s.lessThan), {$3, $1})); }
   | expr_op '>' expr_op { $$ = state->exprs.add<ExprCall>(state->at(@2), state->exprs.add<ExprVar>(state->s.lessThan), {$3, $1}); }
@@ -384,7 +384,7 @@ expr_simple
   /* Let expressions `let {..., body = ...}' are just desugared
      into `(rec {..., body = ...}).body'. */
   | LET '{' binds '}'
-    { $3->recursive = true; $3->pos = CUR_POS; $$ = state->exprs.add<ExprSelect>(state->exprs.alloc, noPos, $3, state->s.body); }
+    { $3->recursive = true; $3->pos = CUR_POS; $$ = state->exprs.add<ExprSelect>(state->exprs.alloc, CUR_POS, $3, state->s.body); }
   | REC '{' binds '}'
     { $3->recursive = true; $3->pos = CUR_POS; $$ = $3; }
   | '{' binds1 '}'

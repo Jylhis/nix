@@ -5,6 +5,10 @@
 
 namespace nix {
 
+void BadStorePathName::anchor() {}
+
+void BadStorePath::anchor() {}
+
 void checkName(std::string_view name)
 {
     if (name.empty())
@@ -47,6 +51,8 @@ StorePath::StorePath(std::string_view _baseName)
 {
     if (baseName.size() < HashLen + 1)
         throw BadStorePath("'%s' is too short to be a valid store path", baseName);
+    if (baseName[HashLen] != '-')
+        throw BadStorePath("'%s' can't name a store path because the hash part is not followed by a '-'", baseName);
     for (auto c : hashPart())
         if (c == 'e' || c == 'o' || c == 'u' || c == 't' || !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z')))
             throw BadStorePath("store path '%s' contains illegal base-32 character '%s'", baseName, c);
@@ -81,14 +87,12 @@ StorePath StorePath::random(std::string_view name)
 
 namespace nlohmann {
 
-using namespace nix;
-
-StorePath adl_serializer<StorePath>::from_json(const json & json)
+nix::StorePath adl_serializer<nix::StorePath>::from_json(const json & json)
 {
-    return StorePath{getString(json)};
+    return nix::StorePath{nix::getString(json)};
 }
 
-void adl_serializer<StorePath>::to_json(json & json, const StorePath & storePath)
+void adl_serializer<nix::StorePath>::to_json(json & json, const nix::StorePath & storePath)
 {
     json = storePath.to_string();
 }

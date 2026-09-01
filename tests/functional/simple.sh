@@ -20,13 +20,13 @@ text=$(cat "$outPath/hello")
 TODO_NixOS
 
 # Directed delete: $outPath is not reachable from a root, so it should
-# be deleteable.
+# be deletable.
 nix-store --delete "$outPath"
 [[ ! -e $outPath/hello ]]
 
 outPath="$(NIX_REMOTE='local?store=/foo&real='"$TEST_ROOT"'/real-store' nix-instantiate --readonly-mode hash-check.nix)"
 if test "$outPath" != "/foo/lfy1s6ca46rm5r6w4gg9hc0axiakjcnm-dependencies.drv"; then
-    echo "hashDerivationModulo appears broken, got $outPath"
+    echo "hashInputDerivationModulo appears broken, got $outPath"
     exit 1
 fi
 

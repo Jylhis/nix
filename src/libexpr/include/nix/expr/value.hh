@@ -335,7 +335,7 @@ struct ValueBase
          * to represent a flattening of the recursive sum type that is a
          * context element.
          *
-         * @See NixStringContext for an more easily understood type,
+         * @see NixStringContext for an more easily understood type,
          * that of the "builder" for this data structure.
          */
         struct Context
@@ -432,9 +432,35 @@ struct ValueBase
         Value * const * elems;
     };
 
-    struct Failed : gc_cleanup
+    /**
+     * Wrapper that stores a std::exception_ptr on the GC heap with a finaliser
+     * that runs the exception_ptr destructor (which is refcounted internally).
+     * This is not a part of the Failed structure to avoid cycles with finalisers,
+     * which Boehm warns about.
+     */
+    struct ExceptionRef : gc_cleanup
     {
+        ExceptionRef(std::exception_ptr ex)
+            : ex(std::move(ex))
+        {
+            assert(this->ex);
+        }
+
+        ExceptionRef(ExceptionRef &&) = delete;
+        ExceptionRef(const ExceptionRef &) = delete;
+        ExceptionRef & operator=(ExceptionRef &&) = delete;
+        ExceptionRef & operator=(const ExceptionRef &) = delete;
+
+        /* To appease -Wweak-vtables. */
+        virtual ~ExceptionRef();
+
         std::exception_ptr ex;
+    };
+
+    struct Failed : gc
+    {
+        ExceptionRef * exRef;
+
         /**
          * Optional value for recovering `RecoverableEvalError`
          * Must be set iff `ex` is an instance of `RecoverableEvalError`.
@@ -442,16 +468,15 @@ struct ValueBase
         Value * recoveryValue;
 
         Failed(std::exception_ptr ex, Value * recoveryValue)
-            : ex(ex)
+            : exRef(new /* ExceptionRef : gc_cleanup */ ExceptionRef(ex))
             , recoveryValue(recoveryValue)
         {
-            assert(this->ex);
         }
 
         [[noreturn]] void rethrow() const
         {
             try {
-                std::rethrow_exception(ex);
+                std::rethrow_exception(exRef->ex);
             } catch (BaseError & e) {
                 /* Rethrow the copy of the exception - not the original one.
                    Stack tracing mechanisms rely on being able to modify the exceptions
@@ -480,7 +505,7 @@ struct PayloadTypeToInternalType
     MACRO(ValueBase::StringWithContext, string, tString)            \
     MACRO(ValueBase::Path, path, tPath)                             \
     MACRO(ValueBase::Null, null_, tNull)                            \
-    MACRO(Bindings *, attrs, tAttrs)                                \
+    MACRO(const Bindings *, attrs, tAttrs)                          \
     MACRO(ValueBase::List, bigList, tListN)                         \
     MACRO(ValueBase::SmallList, smallList, tListSmall)              \
     MACRO(ValueBase::ClosureThunk, thunk, tThunk)                   \
@@ -875,7 +900,7 @@ protected:
         primOp = std::bit_cast<PrimOp *>(payload[1]);
     }
 
-    void getStorage(Bindings *& attrs) const noexcept
+    void getStorage(const Bindings *& attrs) const noexcept
     {
         Payload payload = loadPayload();
         attrs = std::bit_cast<Bindings *>(payload[1]);
@@ -938,7 +963,7 @@ protected:
         setSingleDWordPayload<tPrimOp>(std::bit_cast<PackedPointer>(primOp));
     }
 
-    void setStorage(Bindings * bindings) noexcept
+    void setStorage(const Bindings * bindings) noexcept
     {
         setSingleDWordPayload<tAttrs>(std::bit_cast<PackedPointer>(bindings));
     }
@@ -1247,7 +1272,7 @@ public:
      * Returns the normal type of a Value. This only returns nThunk if
      * the Value hasn't been forceValue'd
      *
-     * @param invalidIsThunk Instead of UB an an invalid (probably
+     * @tparam invalidIsThunk Instead of UB an an invalid (probably
      * 0, so uninitialized) internal type, return `nThunk`.
      */
     template<bool invalidIsThunk = false>
@@ -1298,6 +1323,40 @@ public:
         return !isa<tUninitialized>();
     }
 
+    /**
+     * Whether the value has been evaluated to WHNF, i.e. non-deep successful
+     * evaluation result, or successful "root of a value".
+     * See https://nix.dev/manual/nix/latest/language/evaluation.html?highlight=whnf#values
+     */
+    inline bool isWHNF() const noexcept
+    {
+        switch (getInternalType()) {
+        case tUninitialized:
+            panic("attempt to use uninitialized Value");
+        case tFailed:
+        case tApp:
+        case tThunk:
+            return false;
+        case tInt:
+        case tBool:
+        case tNull:
+        case tFloat:
+        case tExternal:
+        case tPrimOp:
+        case tAttrs:
+        case tListSmall:
+        case tPrimOpApp: // primop-app is known to be a function, which is WHNF
+        case tLambda:
+        case tListN:
+        case tString:
+        case tPath:
+            return true;
+        case tNumberOfInternalTypes:
+            unreachable();
+        }
+        unreachable();
+    }
+
     inline void mkInt(NixInt::Inner n) noexcept
     {
         mkInt(NixInt{n});
@@ -1336,7 +1395,7 @@ public:
         setStorage(Null{});
     }
 
-    inline void mkAttrs(Bindings * a) noexcept
+    inline void mkAttrs(const Bindings * a) noexcept
     {
         setStorage(a);
     }
@@ -1462,7 +1521,7 @@ public:
 
     const Bindings * attrs() const noexcept
     {
-        return getStorage<Bindings *>();
+        return getStorage<const Bindings *>();
     }
 
     const PrimOp * primOp() const noexcept

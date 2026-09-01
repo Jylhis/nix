@@ -23,6 +23,9 @@ class EvalBaseError : public CloneableError<EvalBaseError, Error>
 {
     template<class T>
     friend class EvalErrorBuilder;
+
+    void anchor() override;
+
 public:
     EvalState & state;
 
@@ -54,15 +57,38 @@ MakeError(Abort, EvalError);
 MakeError(TypeError, EvalError);
 MakeError(UndefinedVarError, EvalError);
 MakeError(MissingArgumentError, EvalError);
-MakeError(InfiniteRecursionError, EvalError);
+
+class InfiniteRecursionError : public CloneableError<InfiniteRecursionError, EvalError>
+{
+    void anchor() override;
+
+public:
+
+    /**
+     * Memory location of the Value that was found to be a blackhole, used to
+     * mark where the recursion starts in the printed trace. Only pointer
+     * identity is of interest.
+     */
+    const Value * const v;
+
+    template<typename... Args>
+    explicit InfiniteRecursionError(EvalState & state, const Value * v, const Args &... args)
+        : CloneableError(state, args...)
+        , v(v)
+    {
+    }
+};
 
 /**
  * Resource exhaustion error when evaluation exceeds max-call-depth.
  * Inherits from EvalBaseError (not EvalError) because resource exhaustion
  * should not be cached.
  */
-struct StackOverflowError : public CloneableError<StackOverflowError, EvalBaseError>
+class StackOverflowError : public CloneableError<StackOverflowError, EvalBaseError>
 {
+    void anchor() override;
+
+public:
     StackOverflowError(EvalState & state)
         : CloneableError(state, "stack overflow; max-call-depth exceeded")
     {
@@ -79,8 +105,10 @@ MakeError(IFDError, EvalBaseError);
  */
 MakeError(RecoverableEvalError, EvalBaseError);
 
-struct InvalidPathError : public CloneableError<InvalidPathError, EvalError>
+class InvalidPathError : public CloneableError<InvalidPathError, EvalError>
 {
+    void anchor() override;
+
 public:
     StorePath path;
 

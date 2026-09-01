@@ -22,6 +22,10 @@ check_funcs_unix = [
     'For closing many file descriptors after forking.',
   ],
   [
+    'closefrom',
+    'For closing many file descriptors after forking.',
+  ],
+  [
     'lutimes',
     'Optionally used for changing the mtime of symlinks.',
   ],
@@ -47,6 +51,23 @@ foreach funcspec : check_funcs_unix
   define_value = cxx.has_function(funcspec[0]).to_int()
   configdata_unix.set(define_name, define_value, description : funcspec[1])
 endforeach
+
+# Detects the Linux signature of the copy_file_range.
+have_copy_file_range = cxx.links(
+  '''#include <unistd.h>
+int main() {
+  static_assert(sizeof(off_t) == 8);
+  copy_file_range(0, nullptr, 0, nullptr, 0, 0);
+}
+  ''',
+  name : 'have copy_file_range',
+)
+
+configdata_unix.set(
+  'HAVE_COPY_FILE_RANGE',
+  have_copy_file_range.to_int(),
+  description : 'Optionally used for optimised file copying',
+)
 
 config_unix_priv_h = configure_file(
   configuration : configdata_unix,

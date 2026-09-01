@@ -23,15 +23,28 @@ namespace nix {
 
 const std::filesystem::path & nixConfDir();
 
-struct FileTransferSettings : Config
+class FileTransferSettings : public Config
 {
-private:
     static std::optional<std::filesystem::path> getDefaultSSLCertFile();
+
+    void anchor() override;
 
 public:
     FileTransferSettings();
 
     Setting<bool> enableHttp2{this, true, "http2", "Whether to enable HTTP/2 support."};
+
+    Setting<bool> enableHttp3{
+        this,
+        false,
+        "http3",
+        R"(
+          Whether to try enabling HTTP/3 (QUIC).
+          When enabled, Nix requests HTTP/3 and transparently falls back
+          to HTTP/2 or HTTP/1.1 for servers that do not support it.
+          This option has no effect unless the `nix` binary is linked
+          against a libcurl built with HTTP/3 (QUIC) support.
+        )"};
 
     Setting<std::string> userAgentSuffix{
         this, "", "user-agent-suffix", "String appended to the user agent in HTTP requests."};
@@ -418,7 +431,7 @@ public:
         }
     };
 
-    virtual ~FileTransfer() {}
+    virtual ~FileTransfer();
 
     /**
      * Enqueue a data transfer request, returning a future to the result of
@@ -457,7 +470,7 @@ public:
     void
     download(FileTransferRequest && request, Sink & sink, std::function<void(FileTransferResult)> resultCallback = {});
 
-    enum Error { NotFound, Forbidden, Misc, Transient, Interrupted };
+    enum Error { NotFound, Unauthorized, Forbidden, Misc, Transient };
 };
 
 /**
@@ -477,13 +490,16 @@ ref<FileTransfer> makeFileTransfer(const FileTransferSettings & settings = fileT
 
 class FileTransferError final : public CloneableError<FileTransferError, Error>
 {
+private:
+    void anchor() override;
+
 public:
     FileTransfer::Error error;
     /// intentionally optional
     std::optional<std::string> response;
 
     template<typename... Args>
-    FileTransferError(FileTransfer::Error error, std::optional<std::string> response, const Args &... args);
+    FileTransferError(FileTransfer::Error error, std::optional<std::string> response, Args &&... args);
 };
 
 } // namespace nix

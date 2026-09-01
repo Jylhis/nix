@@ -156,6 +156,17 @@ cp "${config_nix}" "$flakeDir/"
 
 expectStderr 0 nix flake check "$flakeDir" | grepQuiet 'running 1 flake check'
 
+# Test that `nix flake check --print-out-paths` produces the same out path as `nix build --print-out-paths`
+outPath=$(nix flake check "$flakeDir" --print-out-paths)
+outPathBuild=$(nix build "${flakeDir}#checks.$system.foo" --print-out-paths --no-link)
+[[ "$outPath" = "$outPathBuild" ]] || fail "out paths from flake check and build don't match"
+
+# Test out links
+! test -e result || fail "unexpected out link result found"
+nix flake check "$flakeDir" --out-link result
+test -e result || fail "out link result not found"
+rm result
+
 cat > "$flakeDir"/flake.nix <<EOF
 {
   outputs = { self }: {
@@ -213,3 +224,24 @@ EOF
 checkRes=$(nix flake check --keep-going "$flakeDir" 2>&1 && fail "nix flake check should have failed" || true)
 echo "$checkRes" | grepQuiet "checks.${system}.failingCheck"
 echo "$checkRes" | grepQuiet "checks.${system}.anotherFailingCheck"
+
+# Test that missing `drvPath` is an error.
+cat > "$flakeDir"/flake.nix <<EOF
+{
+  outputs = { self }: {
+    checks.${system}.missingDrvPath = {
+      name = "missing-drvPath";
+      type = "derivation";
+    };
+    checks.${system}.anotherMissingDrvPath = {
+      name = "another-missing-drvPath";
+      type = "derivation";
+    };
+  };
+}
+EOF
+
+# shellcheck disable=SC2015
+checkRes=$(nix flake check --keep-going "$flakeDir" 2>&1 && fail "nix flake check should have failed" || true)
+echo "$checkRes" | grepQuiet "checks.${system}.missingDrvPath"
+echo "$checkRes" | grepQuiet "checks.${system}.anotherMissingDrvPath"

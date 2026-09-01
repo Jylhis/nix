@@ -2,8 +2,9 @@
 
 source common.sh
 
-export REMOTE_STORE_DIR="$TEST_ROOT/remote_store"
-export REMOTE_STORE="file://$REMOTE_STORE_DIR"
+signIfNeeded
+
+export REMOTE_STORE="file://$cacheDir"
 
 ensureCorrectlyCopied () {
     attrPath="$1"
@@ -12,7 +13,7 @@ ensureCorrectlyCopied () {
 
 testOneCopy () {
     clearStore
-    rm -rf "$REMOTE_STORE_DIR"
+    clearBinaryCache
 
     attrPath="$1"
     nix copy --to "$REMOTE_STORE" "$attrPath" --file ./content-addressed.nix

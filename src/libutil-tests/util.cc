@@ -1,8 +1,13 @@
 #include "nix/util/util.hh"
 #include "nix/util/types.hh"
+#include "nix/util/tests/gmock-matchers.hh"
 
 #include <limits.h>
 #include <gtest/gtest.h>
+#include <gmock/gmock.h>
+
+#include <string>
+#include <string_view>
 
 namespace nix {
 
@@ -375,6 +380,59 @@ TEST(getOr, getFromContainer)
     auto expected = "yi";
 
     ASSERT_EQ(getOr(s, "one", "nope"), expected);
+}
+
+/* ----------------------------------------------------------------------------
+ * markLast
+ * --------------------------------------------------------------------------*/
+
+TEST(markLast, empty)
+{
+    std::vector<int> v;
+    std::vector<std::pair<bool, int>> result;
+    for (auto [last, x] : markLast(v))
+        result.emplace_back(last, x);
+    ASSERT_TRUE(result.empty());
+}
+
+TEST(markLast, singleElement)
+{
+    std::vector<int> v{42};
+    std::vector<std::pair<bool, int>> result;
+    for (auto [last, x] : markLast(v))
+        result.emplace_back(last, x);
+    ASSERT_EQ(result, (std::vector<std::pair<bool, int>>{{true, 42}}));
+}
+
+TEST(markLast, multipleElements)
+{
+    std::vector<int> v{10, 20, 30};
+    std::vector<std::pair<bool, int>> result;
+    for (auto [last, x] : markLast(v))
+        result.emplace_back(last, x);
+    ASSERT_EQ(result, (std::vector<std::pair<bool, int>>{{false, 10}, {false, 20}, {true, 30}}));
+}
+
+TEST(markLast, mutateThroughReference)
+{
+    std::vector<int> v{1, 2, 3};
+    for (auto && [last, x] : markLast(v))
+        if (last)
+            x = 99;
+    ASSERT_EQ(v, (std::vector<int>{1, 2, 99}));
+}
+
+/* ----------------------------------------------------------------------------
+ * stringsToCharPtrs
+ * --------------------------------------------------------------------------*/
+
+TEST(stringsToCharPtrs, rejectsNulBytes)
+{
+    using namespace std::string_literals;
+    ASSERT_THAT(
+        [&]() { stringsToCharPtrs({"aaa\0bbb"s}); },
+        ::testing::ThrowsMessage<nix::Error>(
+            testing::HasSubstrIgnoreANSIMatcher("string 'aaa␀bbb' with null (␀) bytes used where it's not allowed"s)));
 }
 
 } // namespace nix

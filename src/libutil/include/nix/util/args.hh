@@ -417,6 +417,8 @@ public:
         AcceptedShorthand,
         /** Aliases that will go away */
         Deprecated,
+        /** Aliases for linguistic variation */
+        LinguisticVariation,
     };
 
     /** An alias, except for the original syntax, which is in the map key. */
@@ -462,6 +464,9 @@ struct Completion
  */
 class AddCompletions
 {
+    /* VTable anchor to avoid weak linkage of the vtable - it breaks
+       dynamic_cast across shared libraries on Darwin. */
+    virtual void anchor();
 public:
 
     /**

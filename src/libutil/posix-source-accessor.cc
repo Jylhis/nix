@@ -1,4 +1,4 @@
-#include "nix/util/posix-source-accessor.hh"
+#include "nix/util/source-accessor.hh"
 #include "nix/util/file-system-at.hh"
 #include "nix/util/lru-cache.hh"
 #include "nix/util/sync.hh"
@@ -38,11 +38,53 @@ static SourceAccessor::Stat sourceAccessorStatFromPosixStat(const PosixStat & st
 
 namespace {
 
+/**
+ * Common base helper class for deduplicating common code paths for tracking mtime.
+ */
+class PosixSourceAccessorBase : virtual public SourceAccessor
+{
+private:
+    void anchor() override;
+
+protected:
+    const bool trackLastModified = false;
+
+    /**
+     * The most recent mtime seen by lstat(). This is a hack to
+     * support dumpPathAndGetMtime(). Should remove this eventually.
+     */
+    std::atomic<time_t> mtime = 0;
+
+    void maybeUpdateMtime(time_t seenMTime)
+    {
+        if (trackLastModified) {
+            /* Don't have https://en.cppreference.com/cpp/atomic/atomic/fetch_max yet, thus a CAS loop. */
+            time_t oldValue = mtime.load(std::memory_order_relaxed);
+            while (oldValue < seenMTime && !mtime.compare_exchange_weak(oldValue, seenMTime, std::memory_order_relaxed))
+                ;
+        }
+    }
+
+    PosixSourceAccessorBase(bool trackLastModified)
+        : trackLastModified(trackLastModified)
+    {
+    }
+
+    virtual std::optional<time_t> getLastModified() override
+    {
+        if (trackLastModified)
+            return mtime;
+        return std::nullopt;
+    }
+};
+
+void PosixSourceAccessorBase::anchor() {}
+
 #ifndef _WIN32
 
 class PosixDirectorySourceAccessor;
 
-class PosixFileSourceAccessor : public detail::PosixSourceAccessorBase
+class PosixFileSourceAccessor : public PosixSourceAccessorBase
 {
     friend class PosixDirectorySourceAccessor;
 
@@ -108,7 +150,7 @@ void PosixFileSourceAccessor::readFile(const CanonPath & path, Sink & sink, fun<
     /* The most important invariant we care about here is writing exactly size
        bytes to the sink. copyFdRange should throw an EndOfFile if we fail to read
        `size` bytes. */
-    copyFdRange(fd.get(), /*offset=*/0, size, sink);
+    copyFdRange(fd.get(), /*offset=*/0, size, sink, /*tryCoW=*/true);
 }
 
 bool PosixFileSourceAccessor::pathExists(const CanonPath & path)
@@ -144,7 +186,7 @@ static unsigned getGlobalDirFdCacheLimit()
     return std::min<rlim_t>(4096, lim.rlim_cur / 8);
 }
 
-class PosixDirectorySourceAccessor : public detail::PosixSourceAccessorBase
+class PosixDirectorySourceAccessor : public PosixSourceAccessorBase
 {
 public:
     static unsigned getGlobalFdLimit()
@@ -341,8 +383,20 @@ std::pair<Descriptor, std::shared_ptr<AutoCloseFD>> PosixDirectorySourceAccessor
     }
 
     try {
-        AutoCloseFD parentFdOwning =
-            openFileEnsureBeneathNoSymlinks(startFd, relPath, O_DIRECTORY | O_RDONLY | O_CLOEXEC, 0, std::move(cb));
+        AutoCloseFD parentFdOwning = openFileEnsureBeneathNoSymlinks(
+            startFd,
+            relPath,
+#  ifdef O_PATH
+            /* As to not require read permissions on the directory. */
+            O_PATH |
+#  else
+            /* Sadly this will require read permissison for path resolution,
+               but without O_PATH that's unavoidable. */
+            O_RDONLY |
+#  endif
+                O_DIRECTORY | O_CLOEXEC,
+            0,
+            std::move(cb));
         return {parentFdOwning.get(), make_ref<AutoCloseFD>(std::move(parentFdOwning))};
     } catch (SymlinkNotAllowed & e) {
         /* Need to fixup the error message to include the actual path relative to the (possibly) cached fd. */
@@ -547,7 +601,7 @@ try {
  * A source accessor that uses the Windows filesystem.
  * @todo Should be moved into a separate file.
  */
-class WindowsSourceAccessor : public detail::PosixSourceAccessorBase
+class WindowsSourceAccessor : public PosixSourceAccessorBase
 {
     /**
      * Optional root path to prefix all operations into the native file
@@ -761,7 +815,7 @@ ref<SourceAccessor> makeFSSourceAccessor(std::filesystem::path root, bool trackL
     AutoCloseFD fd = openFileReadonly(root, finalSymlink);
 
     if (!fd) {
-        if (finalSymlink == FinalSymlink::Follow || errno != ELOOP)
+        if (finalSymlink == FinalSymlink::Follow || errno != NIX_ERR_OPEN_SYMLINK)
             throw NativeSysError("opening file %1%", PathFmt(root));
 
         /* A helper class that holds the symlink destination in memory. */

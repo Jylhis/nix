@@ -1,6 +1,7 @@
 #include "nix/store/globals.hh"
 #include "nix/util/current-process.hh"
 #include "nix/util/executable-path.hh"
+#include "nix/util/library-versions.hh"
 #include "nix/main/shared.hh"
 #include "nix/store/store-api.hh"
 #include "nix/store/store-open.hh"
@@ -66,8 +67,7 @@ void printMissing(ref<Store> store, const MissingPaths & missing, Verbosity lvl)
         else
             printMsg(lvl, "these %d derivations will be built:", missing.willBuild.size());
         auto sorted = store->topoSortPaths(missing.willBuild);
-        reverse(sorted.begin(), sorted.end());
-        for (auto & i : sorted)
+        for (auto & i : sorted | std::views::reverse)
             printMsg(lvl, "  %s", store->printStorePath(i));
     }
 
@@ -196,6 +196,13 @@ void initNix(bool loadConfig)
     act.sa_handler = sigHandler;
     if (sigaction(SIGWINCH, &act, 0))
         throw SysError("handling SIGWINCH");
+
+    /* Same for SIGCONT and SIGTSTP, which are also handled by
+     * signalHandlerThread. */
+    if (sigaction(SIGCONT, &act, 0))
+        throw SysError("handling SIGCONT");
+    if (sigaction(SIGTSTP, &act, 0))
+        throw SysError("handling SIGTSTP");
 
     /* Disable SA_RESTART for interrupts, so that system calls on this thread
      * error with EINTR like they do on Linux.
@@ -355,6 +362,10 @@ void printVersion(const std::string & programName)
         std::cout << "Store directory: " << resolveStoreConfig(StoreReference{settings.storeUri.get()})->storeDir
                   << "\n";
         std::cout << "State directory: " << os_string_to_string(settings.nixStateDir.native()) << "\n";
+        Strings libs;
+        for (auto & [name, version] : getLinkedLibraryVersions())
+            libs.push_back(fmt("%s %s", name, version));
+        std::cout << "Linked libraries: " << concatStringsSep(", ", libs) << "\n";
     }
     throw Exit();
 }

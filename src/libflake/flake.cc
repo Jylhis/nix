@@ -38,6 +38,7 @@
 #include "nix/fetchers/input-cache.hh"
 #include "nix/expr/attr-set.hh"
 #include "nix/expr/eval-error.hh"
+#include "nix/expr/fetch-tree.hh"
 #include "nix/expr/nixexpr.hh"
 #include "nix/expr/symbol-table.hh"
 #include "nix/expr/value.hh"
@@ -187,7 +188,7 @@ static FlakeInput parseFlakeInput(
 
     if (attrs.count("type"))
         try {
-            input.ref = FlakeRef::fromAttrs(state.fetchSettings, attrs);
+            input.ref = FlakeRef::fromAttrs(attrs);
         } catch (Error & e) {
             e.addTrace(state.positions[pos], HintFmt("while evaluating flake input"));
             throw;
@@ -197,7 +198,7 @@ static FlakeInput parseFlakeInput(
         if (!attrs.empty())
             throw Error("unexpected flake input attribute '%s', at %s", attrs.begin()->first, state.positions[pos]);
         if (url)
-            input.ref = parseFlakeRef(state.fetchSettings, *url, {}, true, input.isFlake, true);
+            input.ref = parseFlakeRef(*url, {}, true, input.isFlake, true);
     }
 
     if (input.ref && input.follows)
@@ -283,8 +284,7 @@ static Flake readFlake(
                     if (formal.name != state.s.self)
                         flake.inputs.emplace(
                             state.symbols[formal.name],
-                            FlakeInput{
-                                .ref = parseFlakeRef(state.fetchSettings, std::string(state.symbols[formal.name]))});
+                            FlakeInput{.ref = parseFlakeRef(std::string(state.symbols[formal.name]))});
                 }
             }
         }
@@ -570,8 +570,10 @@ LockedFlake lockFlake(
                     }
 
                     if (!input.ref)
-                        input.ref =
-                            FlakeRef::fromAttrs(state.fetchSettings, {{"type", "indirect"}, {"id", std::string(id)}});
+                        input.ref = FlakeRef::fromAttrs({
+                            {"type", "indirect"},
+                            {"id", std::string(id)},
+                        });
 
                     auto overriddenParentPath =
                         input.ref->input.isRelative()
@@ -905,7 +907,7 @@ LockedFlake
 lockFlake(const Settings & settings, EvalState & state, const SourcePath & flakeDir, const LockFlags & lockFlags)
 {
     /* We need a fake flakeref to put in the `Flake` struct, but it's not used for anything. */
-    auto fakeRef = parseFlakeRef(state.fetchSettings, "flake:get-flake");
+    auto fakeRef = parseFlakeRef("flake:get-flake");
     return lockFlake(settings, state, fakeRef, lockFlags, readFlake(state, fakeRef, fakeRef, fakeRef, flakeDir, {}));
 }
 
@@ -915,8 +917,9 @@ static ref<SourceAccessor> makeInternalFS()
     internalFS->setPathDisplay("«flakes-internal»", "");
     internalFS->addFile(
         CanonPath("call-flake.nix"),
-#include "call-flake.nix.gen.hh" // IWYU pragma: keep
-    );
+        {
+#embed "call-flake.nix"
+        });
     return internalFS;
 }
 
@@ -949,6 +952,7 @@ void callFlake(EvalState & state, const LockedFlake & lockedFlake, Value & vRes)
 
         emitTreeAttrs(
             state,
+            noPos,
             storePath,
             lockedNode ? lockedNode->lockedRef.input : lockedFlake.flake.lockedRef.input,
             vSourceInfo,
@@ -973,8 +977,7 @@ void callFlake(EvalState & state, const LockedFlake & lockedFlake, Value & vRes)
     auto vFetchFinalTree = get(state.internalPrimOps, "fetchFinalTree");
     assert(vFetchFinalTree);
 
-    Value * args[] = {vLocks, &vOverrides, *vFetchFinalTree};
-    state.callFunction(*vCallFlake, args, vRes, noPos);
+    state.callFunction(*vCallFlake, std::to_array({vLocks, &vOverrides, *vFetchFinalTree}), vRes, noPos);
 }
 
 std::optional<Fingerprint> LockedFlake::getFingerprint(Store & store, const fetchers::Settings & fetchSettings) const
@@ -988,11 +991,24 @@ std::optional<Fingerprint> LockedFlake::getFingerprint(Store & store, const fetc
 
     *fingerprint += fmt(";%s;%s", flake.lockedRef.subdir, lockFile);
 
-    /* Include revCount and lastModified because they're not
-       necessarily implied by the content fingerprint (e.g. for
-       tarball flakes) but can influence the evaluation result. */
-    if (auto revCount = flake.lockedRef.input.getRevCount())
-        *fingerprint += fmt(";revCount=%d", *revCount);
+    if (auto revCount = get(flake.lockedRef.input.attrs, "revCount")) {
+        if (std::get_if<fetchers::LazyAttr>(revCount)) {
+            /* A lazy revCount is computed by the fetcher, so its
+               value is functionally determined by `rev`. We only
+               need to record its presence, not force its value.
+
+               This means a lazy and a concrete revCount that would
+               resolve to the same value produce different
+               fingerprints, sacrificing some cache hits to avoid
+               the cost of forcing. */
+            *fingerprint += ";hasRevCount";
+        } else if (auto n = flake.lockedRef.input.getRevCount()) {
+            /* A concrete revCount comes from a lockfile or explicit
+               user input. The fetcher passes it through as-is, so
+               it can affect evaluation and must be fingerprinted. */
+            *fingerprint += fmt(";revCount=%d", *n);
+        }
+    }
     if (auto lastModified = flake.lockedRef.input.getLastModified())
         *fingerprint += fmt(";lastModified=%d", *lastModified);
 

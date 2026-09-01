@@ -9,9 +9,9 @@ namespace nix {
 
 void commonChildInit()
 {
-    logger = makeSimpleLogger();
+    logger = makeSimpleLogger().release();
 
-    const static std::string pathNullDevice = "/dev/null";
+    static const std::string pathNullDevice = "/dev/null";
     restoreProcessContext(false);
 
     /* Put the child in a separate session (and thus a separate

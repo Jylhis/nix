@@ -116,14 +116,15 @@ struct CmdPathInfo : StorePathsCommand, MixJSON
         addFlag({
             .longName = "size",
             .shortName = 's',
-            .description = "Print the size of the NAR serialisation of each path.",
+            .description = "Print the [*NAR size*](@docroot@/store/store-object.md#nar-size) of each store object.",
             .handler = {&showSize, true},
         });
 
         addFlag({
             .longName = "closure-size",
             .shortName = 'S',
-            .description = "Print the sum of the sizes of the NAR serialisations of the closure of each path.",
+            .description =
+                "Print the [*closure NAR size*](@docroot@/store/store-object.md#closure-nar-size) of each store object, i.e. the sum over its whole closure.",
             .handler = {&showClosureSize, true},
         });
 
@@ -143,7 +144,11 @@ struct CmdPathInfo : StorePathsCommand, MixJSON
         addFlag({
             .longName = "json-format",
             .description =
-                "JSON format version to use (1 or 2). Version 1 uses string hashes and full store paths. Version 2 uses structured hashes and store path base names. This flag will be required in a future release.",
+                "JSON format version of [store object info](@docroot@/protocols/json/store-object-info.md) to use (1, 2, or 3).\n"
+                "Version 1 uses string hashes and full store paths.\n"
+                "Version 2 uses structured hashes and [store path base names](@docroot@/store/store-path.md#base-name).\n"
+                "Version 3 uses structured signatures.\n"
+                "This flag will be required in a future release.",
             .labels = {"version"},
             .handler = {[this](std::string s) {
                 jsonFormat = parsePathInfoJsonFormat(string2IntWithUnitPrefix<uint64_t>(s));

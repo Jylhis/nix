@@ -25,7 +25,7 @@ static void builtinFetchurl(const BuiltinBuilderContext & ctx)
     if (!out)
         throw Error("'builtin:fetchurl' requires an 'out' output");
 
-    if (!(ctx.drv.type().isFixed() || ctx.drv.type().isImpure()))
+    if (!(type(ctx.drv).isFixed() || type(ctx.drv).isImpure()))
         throw Error("'builtin:fetchurl' must be a fixed-output or impure derivation");
 
     auto storePath = ctx.outputs.at("out");
@@ -54,7 +54,8 @@ static void builtinFetchurl(const BuiltinBuilderContext & ctx)
             }
 #endif
 
-            auto decompressor = makeDecompressionSink(unpack && hasSuffix(mainUrl, ".xz") ? "xz" : "none", sink);
+            auto decompressor = makeDecompressionSink(
+                unpack && hasSuffix(mainUrl, ".xz") ? CompressionAlgo::xz : CompressionAlgo::none, sink);
             fileTransfer->download(std::move(request), *decompressor);
             decompressor->finish();
         });

@@ -2,6 +2,7 @@
 #include "nix/cmd/command-installable-value.hh"
 #include "nix/main/shared.hh"
 #include "nix/store/store-api.hh"
+#include "nix/store/build.hh"
 #include "nix/store/local-fs-store.hh"
 #include "nix/expr/eval-inline.hh"
 #include "nix/store/globals.hh"
@@ -75,10 +76,10 @@ struct CmdBundle : InstallableValueCommand
     {
         auto evalState = getEvalState();
 
-        auto val = installable->toValue(*evalState).first;
+        auto val = installable->toValue(*evalState, AutoCall::Yes).first;
 
-        auto [bundlerFlakeRef, bundlerName, extendedOutputsSpec] = parseFlakeRefWithFragmentAndExtendedOutputsSpec(
-            fetchSettings, bundler, std::filesystem::current_path().string());
+        auto [bundlerFlakeRef, bundlerName, extendedOutputsSpec] =
+            parseFlakeRefWithFragmentAndExtendedOutputsSpec(bundler, std::filesystem::current_path().string());
         const flake::LockFlags lockFlags{.writeLockFile = false};
         InstallableFlake bundler{
             this,
@@ -91,7 +92,7 @@ struct CmdBundle : InstallableValueCommand
             lockFlags};
 
         auto vRes = evalState->allocValue();
-        evalState->callFunction(*bundler.toValue(*evalState).first, *val, *vRes, noPos);
+        evalState->callFunction(*bundler.toValue(*evalState, AutoCall::No).first, *val, *vRes, noPos);
 
         if (!evalState->isDerivation(*vRes))
             throw Error("the bundler '%s' does not produce a derivation", bundler.what());
@@ -111,7 +112,7 @@ struct CmdBundle : InstallableValueCommand
 
         auto outPath = evalState->coerceToStorePath(attr2->pos, *attr2->value, context2, "");
 
-        store->buildPaths({
+        store->getBuilder()->buildPaths({
             DerivedPath::Built{
                 .drvPath = makeConstantStorePathRef(drvPath),
                 .outputs = OutputsSpec::All{},

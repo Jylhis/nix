@@ -2,6 +2,8 @@
 
 source common.sh
 
+signIfNeeded
+
 # The substituters didn't work prior to this time.
 requireDaemonNewerThan "2.18.0pre20230808"
 
@@ -37,7 +39,7 @@ copyAttr () {
 
 testRemoteCacheFor () {
     local derivationPath=$1
-    clearCache
+    clearBinaryCache
     copyAttr "$derivationPath" 1
     clearStore
     # Check nothing gets built.

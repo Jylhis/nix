@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 source common.sh
-source characterisation/framework.sh
+source common/characterisation/framework.sh
 
 testDir="$PWD"
 cd "$TEST_ROOT"
@@ -67,6 +67,10 @@ testRepl () {
     replOutput=$(nix repl "${nixArgs[@]}" 2>&1 <<< ":sh import $testDir/simple.nix")
     echo "$replOutput" | grepInverse "error: Cannot run 'nix-shell'"
 
+    # `:sh` and `:u` pass full config to the child process via NIX_CONFIG.
+    # Previously we had warnings about deprecated unasked settings.
+    echo "$replOutput" | grepInverse "'warn-short-path-literals' is deprecated"
+
     expectStderr 1 nix repl "${testDir}/simple.nix" \
       | grepQuiet -s "error: path \"$testDir/simple.nix\" is not a flake"
 }
@@ -120,83 +124,6 @@ testReplResponseNoRegex () {
     testReplResponseGeneral --fixed-strings "$@"
 }
 
-# :a uses the newest version of a symbol
-#
-# shellcheck disable=SC2016
-testReplResponse '
-:a { a = "1"; }
-:a { a = "2"; }
-"result: ${a}"
-' "result: 2"
-
-# check dollar escaping https://github.com/NixOS/nix/issues/4909
-# note the escaped \,
-#    \\
-# because the second argument is a regex
-#
-# shellcheck disable=SC2016
-testReplResponseNoRegex '
-"$" + "{hi}"
-' '"\${hi}"'
-
-# Test inherit statement support (issue #15053)
-testReplResponseNoRegex '
-a = { b = 1; c = 2; }
-inherit (a) b
-b
-' '1'
-
-# inherit multiple attributes
-testReplResponseNoRegex '
-a = { x = 10; y = 20; }
-inherit (a) x y
-x + y
-' '30'
-
-# inherit from current scope
-testReplResponseNoRegex '
-foo = 42
-inherit foo
-foo
-' '42'
-
-# inherit with semicolon (also works)
-testReplResponseNoRegex '
-a = { z = 99; }
-inherit (a) z;
-z
-' '99'
-
-# multiple bindings on one line
-testReplResponseNoRegex '
-a = 1; b = 2;
-a + b
-' '3'
-
-# nested attribute path
-testReplResponseNoRegex '
-a.b.c = 1;
-a.b
-' '{ c = 1; }'
-
-# mixed bindings: inherit and assignment
-testReplResponseNoRegex '
-x = { p = 10; }
-inherit (x) p; q = 20;
-p + q
-' '30'
-
-# inherit error shows position (without spurious semicolon from retry)
-testReplResponse '
-a = { x = 1; }
-inherit (a) y
-y
-' "error: attribute 'y' missing
-.*at .string.:1:13:
-.*inherit (a) y
-.* \\^
-.*Did you mean x"
-
 testReplResponse '
 drvPath
 ' '".*-simple.drv"' \
@@ -206,6 +133,16 @@ testReplResponse '
 drvPath
 ' '".*-simple.drv"' \
 --file "$testDir/simple.nix" --experimental-features 'ca-derivations'
+
+# `--file` autocalls, `--expr` does not.
+testReplResponse '
+drvPath
+' '".*-simple.drv"' \
+--file "$testDir/repl/function.nix"
+
+testReplResponse '
+' 'while evaluating an attribute set to be merged in the global scope' \
+--expr '{ x ? 1 }: import '"$testDir"'/simple.nix'
 
 mkdir -p flake && cat <<EOF > flake/flake.nix
 {
@@ -222,33 +159,7 @@ foo + baz
 ' "3" \
     ./flake ./flake\#bar --experimental-features 'flakes'
 
-testReplResponse $'
-:a { a = 1; b = 2; longerName = 3; "with spaces" = 4; }
-' 'Added 4 variables.
-a, b, longerName, "with spaces"
-'
-
-cat <<EOF > attribute-set.nix
-{
-    a = 1;
-    b = 2;
-    longerName = 3;
-    "with spaces" = 4;
-}
-EOF
-testReplResponse '
-:l ./attribute-set.nix
-' 'Added 4 variables.
-a, b, longerName, "with spaces"
-'
-
-testReplResponseNoRegex $'
-:a builtins.foldl\' (x: y: x // y) {} (map (x: { ${builtins.toString x} = x; }) (builtins.genList (x: x) 23))
-' 'Added 23 variables.
-"0", "1", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "2", "20", "21", "22", "3", "4", "5", "6"
-... and 3 more; view with :ll'
-
-# Test the `:reload` mechansim with flakes:
+# Test the `:reload` mechanism with flakes:
 # - Eval `./flake#changingThing`
 # - Modify the flake
 # - Re-eval it
@@ -313,22 +224,8 @@ EOF
     grep -q "afterChange" repl_output || fail ":reload didn't pick up git work tree change"
 fi
 
-# Regression: a failed `:l` / `:lf` must not be remembered for `:reload`,
+# Regression: a failed `:lf` must not be remembered for `:reload`,
 # and an error in one loaded file must not drop later ones from the reload list.
-cat > reloadA.nix <<EOF
-{ fromA = 1; }
-EOF
-cat > reloadB.nix <<EOF
-{ fromB = 2; }
-EOF
-testReplResponseNoRegex '
-:l reloadA.nix
-:l ./does-not-exist.nix
-:l reloadB.nix
-:r
-fromA + fromB
-' '3'
-# Same for flakes.
 testReplResponseNoRegex '
 :lf ./does-not-exist-flake
 :lf ./flake
@@ -336,100 +233,6 @@ testReplResponseNoRegex '
 foo
 ' '1' \
     --experimental-features 'flakes'
-
-# Test recursive printing and formatting
-# Normal output should print attributes in lexicographical order non-recursively
-testReplResponseNoRegex '
-{ a = { b = 2; }; l = [ 1 2 3 ]; s = "string"; n = 1234; x = rec { y = { z = { inherit y; }; }; }; }
-' \
-'{
-  a = { ... };
-  l = [ ... ];
-  n = 1234;
-  s = "string";
-  x = { ... };
-}
-'
-
-# Same for lists, but order is preserved
-testReplResponseNoRegex '
-[ 42 1 "thingy" ({ a = 1; }) ([ 1 2 3 ]) ]
-' \
-'[
-  42
-  1
-  "thingy"
-  { ... }
-  [ ... ]
-]
-'
-
-# Same for let expressions
-testReplResponseNoRegex '
-let x = { y = { a = 1; }; inherit x; }; in x
-' \
-'{
-  x = «repeated»;
-  y = { ... };
-}
-'
-
-# The :p command should recursively print sets, but prevent infinite recursion
-testReplResponseNoRegex '
-:p { a = { b = 2; }; s = "string"; n = 1234; x = rec { y = { z = { inherit y; }; }; }; }
-' \
-'{
-  a = { b = 2; };
-  n = 1234;
-  s = "string";
-  x = {
-    y = {
-      z = {
-        y = «repeated»;
-      };
-    };
-  };
-}
-'
-
-# Same for lists
-testReplResponseNoRegex '
-:p [ 42 1 "thingy" (rec { a = 1; b = { inherit a; inherit b; }; }) ([ 1 2 3 ]) ]
-' \
-'[
-  42
-  1
-  "thingy"
-  {
-    a = 1;
-    b = {
-      a = 1;
-      b = «repeated»;
-    };
-  }
-  [
-    1
-    2
-    3
-  ]
-]
-'
-
-# Same for let expressions
-testReplResponseNoRegex '
-:p let x = { y = { a = 1; }; inherit x; }; in x
-' \
-'{
-  x = «repeated»;
-  y = { a = 1; };
-}
-'
-
-testReplResponseNoRegex '
-:ll
-' \
-'error: nothing has been loaded yet
-'
 
 # Don't prompt for more input when getting unexpected EOF in imported files.
 testReplResponse "
@@ -463,8 +266,7 @@ stripFinalPrompt() {
     -e 's/[ \n]*$/\n/'
 }
 
-runRepl () {
-
+filterReplOutput () {
   # That is right, we are also filtering out the testdir _without underscores_.
   # This is crazy, but without it, GHA will fail to run the tests, showing paths
   # _with_ underscores in the set -x log, but _without_ underscores in the
@@ -473,10 +275,7 @@ runRepl () {
   local testDirNoUnderscores
   testDirNoUnderscores="${testDir//_/}"
 
-  _NIX_TEST_RAW_MARKDOWN=1 \
-  _NIX_TEST_REPL_ECHO=1 \
-  nix repl "$@" 2>&1 \
-    | stripColors \
+  stripColors \
     | tr -d '\0' \
     | stripEmptyLinesBeforePrompt \
     | stripFinalPrompt \
@@ -484,10 +283,20 @@ runRepl () {
       -e "s@$testDir@/path/to/tests/functional@g" \
       -e "s@$testDirNoUnderscores@/path/to/tests/functional@g" \
       -e "s@$nixVersion@<nix version>@g" \
-      -e "/Added [0-9]* variables/{s@ [0-9]* @ <number omitted> @;n;d}" \
-      -e '/\.\.\. and [0-9]* more; view with :ll/d' \
     | grep -vF $'warning: you don\'t have Internet access; disabling some network-dependent features' \
     ;
+}
+
+runRepl () {
+    _NIX_TEST_RAW_MARKDOWN=1 \
+    _NIX_TEST_REPL_ECHO=1 \
+    nix repl "$@" 2>&1 | filterReplOutput
+}
+
+runDebugRepl () {
+    _NIX_TEST_RAW_MARKDOWN=1 \
+    _NIX_TEST_REPL_ECHO=1 \
+    nix eval --file "$1" --debugger "${@:2}" 2>&1 | filterReplOutput
 }
 
 for test in $(cd "$testDir/repl"; echo *.in); do
@@ -500,10 +309,39 @@ for test in $(cd "$testDir/repl"; echo *.in); do
       read -r -a flags < "$testDir/repl/$test.flags"
     fi
 
-    (cd "$testDir/repl"; set +x; runRepl "${flags[@]}" 2>&1) < "$in" > "$actual" || {
-        echo "FAIL: $test (exit code $?)" >&2
-        badExitCode=1
-    }
+    # Allow putting comments (lines starting with `# COM:`) in the test for
+    # documentation purposes. Regular comments are not skipped, since those are
+    # also interpreted by the repl.
+    inputWithoutComments=$(grep -Ev '^[[:space:]]*#[[:space:]]*COM:' "$in")
+
+    if [ -f "$testDir/repl/$test.in.debugexpr.nix" ]; then
+        if [[ "$test" =~ debugger-fail-.* ]]; then
+            expectedFail=1
+        elif [[ "$test" =~ debugger-okay-.* ]]; then
+            expectedFail=0
+        else
+            die "unexpected debugger test name: '$test', should be either debugger-okay-* or debugger-fail-*"
+        fi
+
+        set +e
+        (cd "$testDir/repl"; set +x; echo "$inputWithoutComments" | runDebugRepl "$testDir/repl/$test.in.debugexpr.nix" "${flags[@]}" 2>&1) > "$actual"
+        debuggerTestCode=$?
+        set -e
+
+        if ((expectedFail == 0 && debuggerTestCode != 0)); then
+            echo "test failed: $test (exit code $debuggerTestCode)" >&2
+            badExitCode=1
+        elif ((expectedFail == 1 && debuggerTestCode == 0)); then
+            echo "test failed: $test unexpectedly succeeded" >&2
+            badExitCode=1
+        fi
+    else
+        (cd "$testDir/repl"; set +x; echo "$inputWithoutComments" | runRepl "${flags[@]}" 2>&1) > "$actual" || {
+            echo "test failed: $test (exit code $?)" >&2
+            badExitCode=1
+        }
+    fi
+
     diffAndAcceptInner "$test" "$actual" "$expected"
 done
 

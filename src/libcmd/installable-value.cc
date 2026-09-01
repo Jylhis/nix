@@ -4,18 +4,18 @@
 
 namespace nix {
 
-std::vector<ref<eval_cache::AttrCursor>> InstallableValue::getCursors(EvalState & state)
+std::vector<ref<eval_cache::AttrCursor>> InstallableValue::getCursors(EvalState & state, AutoCall autoCall)
 {
-    auto evalCache =
-        std::make_shared<nix::eval_cache::EvalCache>(std::nullopt, state, [&]() { return toValue(state).first; });
+    auto evalCache = std::make_shared<nix::eval_cache::EvalCache>(
+        std::nullopt, state, [&, autoCall]() { return toValue(state, autoCall).first; });
     return {evalCache->getRoot()};
 }
 
-ref<eval_cache::AttrCursor> InstallableValue::getCursor(EvalState & state)
+ref<eval_cache::AttrCursor> InstallableValue::getCursor(EvalState & state, AutoCall autoCall)
 {
     /* Although getCursors should return at least one element, in case it doesn't,
        bound check to avoid an undefined behavior for vector[0] */
-    return getCursors(state).at(0);
+    return getCursors(state, autoCall).at(0);
 }
 
 static UsageError nonValueInstallable(Installable & installable)
@@ -54,8 +54,11 @@ InstallableValue::trySinglePathToDerivedPaths(Value & v, const PosIdx pos, std::
     }
 
     else if (v.type() == nString) {
+        auto path = state->coerceToSingleDerivedPath(pos, v, errorCtx);
+        if (auto o = std::get_if<SingleDerivedPath::Opaque>(&path.raw()))
+            state->ensureLazyPathCopied(o->path);
         return {{
-            .path = DerivedPath::fromSingle(state->coerceToSingleDerivedPath(pos, v, errorCtx)),
+            .path = DerivedPath::fromSingle(path),
             .info = make_ref<ExtraPathInfo>(),
         }};
     }

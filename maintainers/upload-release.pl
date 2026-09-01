@@ -64,7 +64,13 @@ my $evalInfo = decode_json(fetch($evalUrl, 'application/json'));
 #print Dumper($evalInfo);
 my $flakeUrl = $evalInfo->{flake};
 my $flakeInfo = decode_json(`nix flake metadata --json "$flakeUrl"` or die) if $flakeUrl;
-my $nixRev = ($flakeInfo ? $flakeInfo->{revision} : $evalInfo->{jobsetevalinputs}->{nix}->{revision}) or die;
+# Flake jobsets (`maintenance-X.Y`) expose the rev via the flake URL.
+# The release-artifacts jobset (`maintenance-X.Y-release`) is a legacy
+# jobset whose checkout is passed in as input `src`.
+my $nixRev = ($flakeInfo
+              ? $flakeInfo->{revision}
+              : $evalInfo->{jobsetevalinputs}->{src}->{revision}
+                // $evalInfo->{jobsetevalinputs}->{nix}->{revision}) or die;
 
 my $buildInfo = decode_json(fetch("$evalUrl/job/build.nix-everything.x86_64-linux", 'application/json'));
 #print Dumper($buildInfo);
@@ -265,7 +271,6 @@ unless ($opt->skip_s3) {
     downloadFile("binaryTarball.i686-linux", "1");
     downloadFile("binaryTarball.x86_64-linux", "1");
     downloadFile("binaryTarball.aarch64-linux", "1");
-    downloadFile("binaryTarball.x86_64-darwin", "1");
     downloadFile("binaryTarball.aarch64-darwin", "1");
     eval {
         downloadFile("binaryTarballCross.x86_64-linux.armv6l-unknown-linux-gnueabihf", "1");
@@ -273,6 +278,14 @@ unless ($opt->skip_s3) {
     warn "$@" if $@;
     eval {
         downloadFile("binaryTarballCross.x86_64-linux.armv7l-unknown-linux-gnueabihf", "1");
+    };
+    warn "$@" if $@;
+    eval {
+        downloadFile("binaryTarballCross.x86_64-linux.powerpc64-unknown-linux-gnuabielfv1", "1");
+    };
+    warn "$@" if $@;
+    eval {
+        downloadFile("binaryTarballCross.x86_64-linux.powerpc64le-unknown-linux-gnu", "1");
     };
     warn "$@" if $@;
     eval {
@@ -291,8 +304,9 @@ unless ($opt->skip_s3) {
         "  x86_64-linux = \"" . getStorePath("build.nix-everything.x86_64-linux") . "\";\n" .
         "  i686-linux = \"" . getStorePath("build.nix-everything.i686-linux") . "\";\n" .
         "  aarch64-linux = \"" . getStorePath("build.nix-everything.aarch64-linux") . "\";\n" .
+        "  powerpc64-linux = \"" . getStorePath("buildCross.nix-everything.powerpc64-unknown-linux-gnuabielfv1.x86_64-linux") . "\";\n" .
+        "  powerpc64le-linux = \"" . getStorePath("buildCross.nix-everything.powerpc64le-unknown-linux-gnu.x86_64-linux") . "\";\n" .
         "  riscv64-linux = \"" . getStorePath("buildCross.nix-everything.riscv64-unknown-linux-gnu.x86_64-linux") . "\";\n" .
-        "  x86_64-darwin = \"" . getStorePath("build.nix-everything.x86_64-darwin") . "\";\n" .
         "  aarch64-darwin = \"" . getStorePath("build.nix-everything.aarch64-darwin") . "\";\n" .
         "  x86_64-freebsd = \"" . getStorePath("buildCross.nix-everything.x86_64-unknown-freebsd.x86_64-linux") . "\";\n" .
         "}\n");

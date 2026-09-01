@@ -12,6 +12,8 @@
 
 namespace nix {
 
+void BadURL::anchor() {}
+
 std::regex refRegex(refRegexS, std::regex::ECMAScript);
 std::regex revRegex(revRegexS, std::regex::ECMAScript);
 
@@ -297,8 +299,8 @@ try {
     throw BadURL("invalid URI query '%s': %s", query, e.code().message());
 }
 
-const static std::string allowedInQuery = ":@/?";
-const static std::string allowedInPath = ":@";
+static const std::string allowedInQuery = ":@/?";
+static const std::string allowedInPath = ":@";
 
 std::string encodeUrlPath(std::span<const std::string> urlPath)
 {
@@ -711,7 +713,7 @@ ParsedURL fixGitURL(std::string url)
 // https://www.rfc-editor.org/rfc/rfc3986#section-3.1
 bool isValidSchemeName(std::string_view s)
 {
-    const static std::string schemeNameRegex = "(?:[a-z][a-z0-9+.-]*)";
+    static const std::string schemeNameRegex = "(?:[a-z][a-z0-9+.-]*)";
     static std::regex regex(schemeNameRegex, std::regex::ECMAScript);
 
     return std::regex_match(s.begin(), s.end(), regex, std::regex_constants::match_default);

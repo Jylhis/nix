@@ -2,7 +2,7 @@ R"(
 
 **Store URL format**: `s3://`*bucket-name*
 
-This store allows reading and writing a binary cache stored in an AWS S3 (or S3-compatible service) bucket.
+This store allows reading and writing a [binary cache](@docroot@/protocols/binary-cache/index.md) stored in an AWS S3 (or S3-compatible service) bucket.
 This store shares many idioms with the [HTTP Binary Cache Store](@docroot@/store/types/http-binary-cache-store.md).
 
 For AWS S3, the binary cache URL for a bucket named `example-nix-cache` will be exactly <s3://example-nix-cache>.
@@ -99,7 +99,7 @@ With bucket policies and authentication set up as described above, uploading wor
 
   ```console
   $ nix copy nixpkgs.hello --to \
-    's3://example-nix-cache?profile=cache-upload&scheme=https&endpoint=minio.example.com'
+    's3://example-nix-cache?profile=cache-upload&endpoint=https://minio.example.com'
   ```
 
 )"

@@ -2,8 +2,10 @@
 #include "nix/util/terminal.hh"
 #include "nix/util/sync.hh"
 #include "nix/util/signals.hh"
-#include "nix/store/store-api.hh"
+#include "nix/store/path.hh"
+#include "nix/util/file-system.hh"
 #include "nix/store/names.hh"
+#include "nix/util/util.hh"
 
 #include <map>
 #include <thread>
@@ -13,18 +15,20 @@
 
 namespace nix {
 
-static std::string_view getS(const std::vector<Logger::Field> & fields, size_t n)
+namespace {
+
+static std::optional<std::string_view> getS(std::span<const Logger::Field> fields, size_t n)
 {
-    assert(n < fields.size());
-    assert(fields[n].type == Logger::Field::tString);
-    return fields[n].s;
+    if (n >= fields.size() || !std::holds_alternative<std::string>(fields[n]))
+        return std::nullopt;
+    return std::get<std::string>(fields[n]);
 }
 
-static uint64_t getI(const std::vector<Logger::Field> & fields, size_t n)
+static std::optional<uint64_t> getI(std::span<const Logger::Field> fields, size_t n)
 {
-    assert(n < fields.size());
-    assert(fields[n].type == Logger::Field::tInt);
-    return fields[n].i;
+    if (n >= fields.size() || !std::holds_alternative<uint64_t>(fields[n]))
+        return std::nullopt;
+    return std::get<uint64_t>(fields[n]);
 }
 
 static std::string_view storePathToName(std::string_view path)
@@ -34,10 +38,17 @@ static std::string_view storePathToName(std::string_view path)
     return i == std::string::npos ? base.substr(0, 0) : base.substr(i + 1);
 }
 
-class ProgressBar : public Logger
+static std::string_view storePathToNameWithoutDrvSuffix(std::string_view path)
+{
+    auto res = storePathToName(path);
+    if (hasSuffix(res, drvExtension))
+        res.remove_suffix(drvExtension.size());
+    return res;
+}
+
+class ProgressBar final : public Logger
 {
 private:
-
     struct ActInfo
     {
         std::string s, lastLine, phase;
@@ -94,7 +105,19 @@ private:
     bool printBuildLogs = false;
     bool isTTY;
 
-    std::unique_ptr<InterruptCallback> interruptCallback;
+    std::unique_ptr<InterruptCallback> interruptCallback, stopCallback, contCallback, winchCallback;
+
+    void hideCursorIfNeeded() const
+    {
+        if (isTTY)
+            writeToStderr("\e[?25l");
+    }
+
+    void unhideCursorIfNeeded() const
+    {
+        if (isTTY)
+            writeToStderr("\e[?25h");
+    }
 
 public:
 
@@ -105,7 +128,32 @@ public:
             redraw("\rshutting down\e[K");
         }))
     {
+        hideCursorIfNeeded();
         state_.lock()->active = isTTY;
+
+        /* On Ctrl-Z, unhide the cursor before the process is
+           stopped. */
+        stopCallback = createSignalCallback(SignalType::Stop, [&]() {
+            auto state(state_.lock());
+            if (state->active && !state->isPaused())
+                unhideCursorIfNeeded();
+        });
+
+        /* Redraw the progress bar when the process is resumed or the
+           terminal size changes. */
+        auto redrawCallback = [&]() {
+            auto state(state_.lock());
+            if (state->active && !state->isPaused()) {
+                /* Force a redraw, since the new output may be
+                   identical to the one cached by redraw(). */
+                invalidateRedrawCache();
+                hideCursorIfNeeded();
+                update(*state);
+            }
+        };
+        contCallback = createSignalCallback(SignalType::Cont, redrawCallback);
+        winchCallback = createSignalCallback(SignalType::Winch, redrawCallback);
+
         updateThread = std::thread([&]() {
             auto state(state_.lock());
             auto nextWakeup = std::chrono::milliseconds::max();
@@ -131,6 +179,7 @@ public:
             if (state->active) {
                 state->active = false;
                 clearProgressDisplay();
+                unhideCursorIfNeeded();
                 updateCV.notify_one();
                 quitCV.notify_one();
             }
@@ -148,8 +197,10 @@ public:
             return;
         }
 
-        if (state->active)
+        if (state->active) {
             clearProgressDisplay();
+            unhideCursorIfNeeded();
+        }
     }
 
     void resume() override
@@ -162,8 +213,10 @@ public:
             state->suspensions--;
         }
         if (state->suspensions == 0) {
-            if (state->active)
+            if (state->active) {
                 clearProgressDisplay();
+                hideCursorIfNeeded();
+            }
             state->haveUpdate = true;
             updateCV.notify_one();
         }
@@ -174,7 +227,7 @@ public:
         return printBuildLogs;
     }
 
-    void log(Verbosity lvl, std::string_view s) override
+    void log(Verbosity lvl, std::string_view s) noexcept override
     {
         if (lvl > verbosity)
             return;
@@ -182,7 +235,7 @@ public:
         log(*state, lvl, s);
     }
 
-    void logEI(const ErrorInfo & ei) override
+    void logEI(const ErrorInfo & ei) noexcept override
     {
         auto state(state_.lock());
 
@@ -192,7 +245,7 @@ public:
         log(*state, ei.level, oss.view());
     }
 
-    void log(State & state, Verbosity lvl, std::string_view s)
+    void log(State & state, Verbosity lvl, std::string_view s) noexcept
     {
         if (state.active) {
             invalidateRedrawCache();
@@ -208,8 +261,8 @@ public:
         Verbosity lvl,
         ActivityType type,
         const std::string & s,
-        const Fields & fields,
-        ActivityId parent) override
+        std::span<const Field> fields,
+        ActivityId parent) noexcept override
     {
         auto state(state_.lock());
 
@@ -223,43 +276,42 @@ public:
         state->activitiesByType[type].its.emplace(act, i);
 
         if (type == actBuild) {
-            std::string name(storePathToName(getS(fields, 0)));
-            if (hasSuffix(name, ".drv"))
-                name = name.substr(0, name.size() - 4);
-            i->s = fmt("building " ANSI_BOLD "%s" ANSI_NORMAL, name);
-            auto machineName = getS(fields, 1);
-            if (machineName != "")
-                i->s += fmt(" on " ANSI_BOLD "%s" ANSI_NORMAL, machineName);
-
-            // Used to be curRound and nrRounds, but the
-            // implementation was broken for a long time.
-            if (getI(fields, 2) != 1 || getI(fields, 3) != 1) {
-                throw Error("log message indicated repeating builds, but this is not currently implemented");
+            if (auto path = getS(fields, 0)) {
+                auto name = storePathToNameWithoutDrvSuffix(*path);
+                i->s = fmt("building " ANSI_BOLD "%s" ANSI_NORMAL, name);
+                auto machineName = getS(fields, 1);
+                if (machineName && *machineName != "")
+                    i->s += fmt(" on " ANSI_BOLD "%s" ANSI_NORMAL, *machineName);
+                i->name = DrvName(name).name;
             }
-            i->name = DrvName(name).name;
         }
 
         if (type == actSubstitute) {
-            auto name = storePathToName(getS(fields, 0));
+            auto path = getS(fields, 0);
             auto sub = getS(fields, 1);
-            i->s =
-                fmt(hasPrefix(sub, "local") ? "copying " ANSI_BOLD "%s" ANSI_NORMAL " from %s"
-                                            : "fetching " ANSI_BOLD "%s" ANSI_NORMAL " from %s",
-                    name,
-                    sub);
+            if (path && sub) {
+                auto name = storePathToName(*path);
+                i->s =
+                    fmt(hasPrefix(*sub, "local") ? "copying " ANSI_BOLD "%s" ANSI_NORMAL " from %s"
+                                                 : "fetching " ANSI_BOLD "%s" ANSI_NORMAL " from %s",
+                        name,
+                        *sub);
+            }
         }
 
         if (type == actPostBuildHook) {
-            auto name = storePathToName(getS(fields, 0));
-            if (hasSuffix(name, ".drv"))
-                name = name.substr(0, name.size() - 4);
-            i->s = fmt("post-build " ANSI_BOLD "%s" ANSI_NORMAL, name);
-            i->name = DrvName(name).name;
+            if (auto path = getS(fields, 0)) {
+                auto name = storePathToNameWithoutDrvSuffix(*path);
+                i->s = fmt("post-build " ANSI_BOLD "%s" ANSI_NORMAL, name);
+                i->name = DrvName(name).name;
+            }
         }
 
         if (type == actQueryPathInfo) {
-            auto name = storePathToName(getS(fields, 0));
-            i->s = fmt("querying " ANSI_BOLD "%s" ANSI_NORMAL " on %s", name, getS(fields, 1));
+            auto path = getS(fields, 0);
+            auto sub = getS(fields, 1);
+            if (path && sub)
+                i->s = fmt("querying " ANSI_BOLD "%s" ANSI_NORMAL " on %s", storePathToName(*path), *sub);
         }
 
         if ((type == actFileTransfer && hasAncestor(*state, actCopyPath, parent))
@@ -285,7 +337,7 @@ public:
         return false;
     }
 
-    void stopActivity(ActivityId act) override
+    void stopActivity(ActivityId act) noexcept override
     {
         auto state(state_.lock());
 
@@ -307,18 +359,21 @@ public:
         update(*state);
     }
 
-    void result(ActivityId act, ResultType type, const std::vector<Field> & fields) override
+    void result(ActivityId act, ResultType type, std::span<const Field> fields) noexcept override
     {
         auto state(state_.lock());
 
         if (type == resFileLinked) {
             state->filesLinked++;
-            state->bytesLinked += getI(fields, 0);
+            state->bytesLinked += getI(fields, 0).value_or(0);
             update(*state);
         }
 
         else if (type == resBuildLogLine || type == resPostBuildLogLine) {
-            auto lastLine = chomp(getS(fields, 0));
+            auto line = getS(fields, 0);
+            if (!line)
+                return;
+            auto lastLine = chomp(*line);
             auto i = state->its.find(act);
             assert(i != state->its.end());
             ActInfo info = *i->second;
@@ -348,45 +403,61 @@ public:
         }
 
         else if (type == resSetPhase) {
+            auto phase = getS(fields, 0);
+            if (!phase)
+                return;
             auto i = state->its.find(act);
             assert(i != state->its.end());
-            i->second->phase = getS(fields, 0);
+            i->second->phase = *phase;
             update(*state);
         }
 
         else if (type == resProgress) {
+            auto done = getI(fields, 0);
+            auto expected = getI(fields, 1);
+            auto running = getI(fields, 2);
+            auto failed = getI(fields, 3);
+            if (!done || !expected || !running || !failed)
+                return;
             auto i = state->its.find(act);
             assert(i != state->its.end());
             ActInfo & actInfo = *i->second;
-            actInfo.done = getI(fields, 0);
-            actInfo.expected = getI(fields, 1);
-            actInfo.running = getI(fields, 2);
-            actInfo.failed = getI(fields, 3);
+            actInfo.done = *done;
+            actInfo.expected = *expected;
+            actInfo.running = *running;
+            actInfo.failed = *failed;
             update(*state);
         }
 
         else if (type == resSetExpected) {
+            auto expectedType = getI(fields, 0);
+            auto expected = getI(fields, 1);
+            if (!expectedType || !expected)
+                return;
             auto i = state->its.find(act);
             assert(i != state->its.end());
             ActInfo & actInfo = *i->second;
-            auto type = (ActivityType) getI(fields, 0);
+            auto type = (ActivityType) *expectedType;
             auto & j = actInfo.expectedByType[type];
             state->activitiesByType[type].expected -= j;
-            j = getI(fields, 1);
+            j = *expected;
             state->activitiesByType[type].expected += j;
             update(*state);
         }
 
         else if (type == resFetchStatus) {
+            auto lastLine = getS(fields, 0);
+            if (!lastLine)
+                return;
             auto i = state->its.find(act);
             assert(i != state->its.end());
             ActInfo & actInfo = *i->second;
-            actInfo.lastLine = getS(fields, 0);
+            actInfo.lastLine = *lastLine;
             update(*state);
         }
     }
 
-    void update(State & state)
+    void update(State & state) noexcept
     {
         state.haveUpdate = true;
         updateCV.notify_one();
@@ -399,7 +470,7 @@ public:
      * with text selection in some terminals, including libvte-based terminal
      * emulators.
      */
-    void redraw(std::string newOutput)
+    void redraw(std::string newOutput) noexcept
     {
         auto lastOutput(lastOutput_.lock());
         if (newOutput != *lastOutput) {
@@ -419,7 +490,7 @@ public:
         writeToStderr("\r\e[K");
     }
 
-    std::chrono::milliseconds draw(State & state)
+    std::chrono::milliseconds draw(State & state) noexcept
     {
         auto nextWakeup = std::chrono::milliseconds::max();
 
@@ -483,7 +554,7 @@ public:
         return nextWakeup;
     }
 
-    std::string getStatus(State & state)
+    std::string getStatus(State & state) noexcept
     {
         std::string res;
 
@@ -674,7 +745,9 @@ public:
             return {};
         invalidateRedrawCache();
         std::cerr << fmt("\r\e[K%s ", msg);
+        unhideCursorIfNeeded();
         auto s = trim(readLine(getStandardInput(), true));
+        hideCursorIfNeeded();
         if (s.size() != 1)
             return {};
         draw(*state);
@@ -686,6 +759,8 @@ public:
         this->printBuildLogs = printBuildLogs;
     }
 };
+
+} // namespace
 
 std::unique_ptr<Logger> makeProgressBar()
 {

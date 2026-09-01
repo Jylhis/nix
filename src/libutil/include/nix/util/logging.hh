@@ -8,6 +8,8 @@
 #include "nix/util/fun.hh"
 
 #include <filesystem>
+#include <span>
+#include <type_traits>
 
 #include <nlohmann/json_fwd.hpp>
 
@@ -28,6 +30,16 @@ typedef enum {
     actPostBuildHook = 110,
     actBuildWaiting = 111,
     actFetchTree = 112,
+    /* A source path is being copied into the store, or (in dry-run mode) hashed
+       to compute its store path, via `fetchToStore()`. This backs eval-time path
+       coercion (`"${./file}"`, `src = ./.`), `builtins.path`, and similar. The
+       activity brackets the operation. Fields:
+         [0] = source path (string)
+         [1] = whether the path is only being hashed in a dry run rather than
+               actually copied (1 = hashing, 0 = copying) (int)
+       The resulting store path is only known once the operation completes and is
+       delivered via a resFetchToStore result. */
+    actFetchToStore = 113,
 } ActivityType;
 
 typedef enum {
@@ -40,12 +52,18 @@ typedef enum {
     resSetExpected = 106,
     resPostBuildLogLine = 107,
     resFetchStatus = 108,
+    /* The resulting store path of an actFetchToStore activity, emitted once the
+       operation completes. Fields: [0] = store path (string). */
+    resFetchToStore = 109,
 } ResultType;
 
 typedef uint64_t ActivityId;
 
-struct LoggerSettings : Config
+class LoggerSettings : public Config
 {
+    void anchor() override;
+
+public:
     Setting<bool> showTrace{
         this,
         false,
@@ -75,37 +93,33 @@ class Logger
     friend struct Activity;
 
 public:
-
-    struct Field
+    /* Note that there are no members and invariants in the class itself
+       inheriting is fine, because slicing won't post any issues. There are
+       public constructors for implicit conversions and convenience. */
+    struct Field : public std::variant<uint64_t, std::string>
     {
-        // FIXME: use std::variant.
-        enum { tInt = 0, tString = 1 } type;
-
-        uint64_t i = 0;
-        std::string s;
-
         Field(const std::string & s)
-            : type(tString)
-            , s(s)
+            : variant(s)
+        {
+        }
+
+        Field(std::string && s)
+            : variant(std::move(s))
         {
         }
 
         Field(const char * s)
-            : type(tString)
-            , s(s)
+            : variant(s)
         {
         }
 
-        Field(const uint64_t & i)
-            : type(tInt)
-            , i(i)
+        Field(uint64_t i)
+            : variant(i)
         {
         }
     };
 
-    typedef std::vector<Field> Fields;
-
-    virtual ~Logger() {}
+    virtual ~Logger();
 
     virtual void stop() {};
 
@@ -130,34 +144,43 @@ public:
         return false;
     }
 
-    virtual void log(Verbosity lvl, std::string_view s) = 0;
+    /* Note: logging functions must be noexcept, since they're often
+       called in contexts where exceptions cannot be handled (such as
+       in completion callbacks or destructors). Implementations should
+       handle failure to write the message (e.g. by ignoring it or
+       disabling the logger). */
+    virtual void log(Verbosity lvl, std::string_view s) noexcept = 0;
 
-    void log(std::string_view s)
+    void log(std::string_view s) noexcept
     {
         log(lvlInfo, s);
     }
 
-    virtual void logEI(const ErrorInfo & ei) = 0;
+    virtual void logEI(const ErrorInfo & ei) noexcept = 0;
 
-    void logEI(Verbosity lvl, ErrorInfo ei)
+    void logEI(Verbosity lvl, ErrorInfo ei) noexcept
     {
         ei.level = lvl;
         logEI(ei);
     }
 
-    virtual void warn(const std::string & msg);
+    virtual void warn(const std::string & msg) noexcept;
 
     virtual void startActivity(
         ActivityId act,
         Verbosity lvl,
         ActivityType type,
         const std::string & s,
-        const Fields & fields,
-        ActivityId parent) {};
+        std::span<const Field> fields,
+        ActivityId parent) noexcept
+    {
+    }
 
-    virtual void stopActivity(ActivityId act) {};
+    virtual void stopActivity(ActivityId act) noexcept {};
 
-    virtual void result(ActivityId act, ResultType type, const Fields & fields) {};
+    virtual void result(ActivityId act, ResultType type, std::span<const Field> fields) noexcept {}
+
+    virtual void result(ActivityId act, ResultType type, const nlohmann::json & json) noexcept {}
 
     virtual void writeToStdout(std::string_view s);
 
@@ -175,19 +198,6 @@ public:
     virtual void setPrintBuildLogs(bool printBuildLogs) {}
 };
 
-/**
- * A variadic template that does nothing.
- *
- * Useful to call a function with each argument in a parameter pack.
- */
-struct nop
-{
-    template<typename... T>
-    nop(T...)
-    {
-    }
-};
-
 ActivityId getCurActivity();
 void setCurActivity(const ActivityId activityId);
 
@@ -202,12 +212,17 @@ struct Activity
         Verbosity lvl,
         ActivityType type,
         const std::string & s = "",
-        const Logger::Fields & fields = {},
+        std::span<const Logger::Field> fields = {},
         ActivityId parent = getCurActivity());
 
     Activity(
-        Logger & logger, ActivityType type, const Logger::Fields & fields = {}, ActivityId parent = getCurActivity())
-        : Activity(logger, lvlError, type, "", fields, parent) {};
+        Logger & logger,
+        ActivityType type,
+        std::span<const Logger::Field> fields = {},
+        ActivityId parent = getCurActivity())
+        : Activity(logger, lvlError, type, "", fields, parent)
+    {
+    }
 
     Activity(const Activity & act) = delete;
 
@@ -224,14 +239,14 @@ struct Activity
     }
 
     template<typename... Args>
-    void result(ResultType type, const Args &... args) const
+        requires(!(std::is_constructible_v<std::span<const Logger::Field>, std::remove_cvref_t<Args>> || ...))
+    void result(ResultType type, Args &&... args) const
     {
-        Logger::Fields fields;
-        nop{(fields.emplace_back(Logger::Field(args)), 1)...};
+        std::array<Logger::Field, sizeof...(args)> fields = {std::forward<Args>(args)...};
         result(type, fields);
     }
 
-    void result(ResultType type, const Logger::Fields & fields) const
+    void result(ResultType type, std::span<const Logger::Field> fields) const
     {
         logger.result(id, type, fields);
     }
@@ -255,7 +270,7 @@ struct PushActivity
     }
 };
 
-extern std::unique_ptr<Logger> logger;
+extern Logger * logger;
 
 std::unique_ptr<Logger> makeSimpleLogger(bool printBuildLogs = true);
 
@@ -357,6 +372,6 @@ inline void warn(const std::string & fs, const Args &... args)
         warn(args);                   \
     }
 
-void writeToStderr(std::string_view s);
+void writeToStderr(std::string_view s) noexcept;
 
 } // namespace nix

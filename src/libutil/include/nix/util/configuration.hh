@@ -52,6 +52,11 @@ class AbstractSetting;
 
 class AbstractConfig
 {
+private:
+    /* VTable anchor to avoid weak linkage of the vtable - it breaks
+       dynamic_cast across shared libraries on Darwin. */
+    virtual void anchor();
+
 protected:
     StringMap unknownSettings;
 
@@ -65,10 +70,18 @@ public:
      */
     virtual bool set(const std::string & name, const std::string & value) = 0;
 
+    /**
+     * Whether `set(name, ...)` would append to an existing appendable
+     * setting via the `extra-` prefix, rather than assign. Mirrors the
+     * classification in `Config::set`. Defaults to false.
+     */
+    virtual bool isAppendSetting(const std::string & name) const;
+
     struct SettingInfo
     {
         std::string value;
         std::string description;
+        bool excludedFromFullSerialisation = false;
     };
 
     /**
@@ -141,6 +154,8 @@ class Config : public AbstractConfig
 {
     friend class AbstractSetting;
 
+    void anchor() override;
+
 public:
 
     struct SettingData
@@ -160,6 +175,8 @@ public:
     Config(StringMap initials = {});
 
     bool set(const std::string & name, const std::string & value) override;
+
+    bool isAppendSetting(const std::string & name) const override;
 
     void addSetting(AbstractSetting * setting);
 
@@ -191,6 +208,11 @@ public:
     std::optional<ExperimentalFeature> experimentalFeature;
 
     bool isOverridden() const;
+
+    virtual bool excludedFromFullSerialisation() const
+    {
+        return false;
+    }
 
 protected:
 
@@ -510,6 +532,9 @@ public:
         options->addSetting(this);
     }
 
+    /* To appease -Wweak-vtables. */
+    ~Setting() override;
+
     void operator=(const AbsolutePath & v)
     {
         this->assign(v);
@@ -540,7 +565,10 @@ void BaseSetting<std::set<std::filesystem::path>>::appendOrSet(std::set<std::fil
 
 struct ExperimentalFeatureSettings : Config
 {
+private:
+    void anchor() override;
 
+public:
     Setting<std::set<ExperimentalFeature>> experimentalFeatures{
         this,
         {},

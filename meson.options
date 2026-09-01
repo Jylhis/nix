@@ -15,10 +15,24 @@ option(
 )
 
 option(
-  'bindings',
+  'fuzzers',
+  type : 'boolean',
+  value : false,
+  description : 'Build fuzz targets',
+)
+
+option(
+  'fuzzing-engine',
+  type : 'string',
+  value : '',
+  description : 'One compiler-driver argument for linking an external fuzzing engine',
+)
+
+option(
+  'functional-tests',
   type : 'boolean',
   value : true,
-  description : 'Build language bindings (e.g. Perl)',
+  description : 'Build functional (E2E) tests',
 )
 
 option(

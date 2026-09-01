@@ -13,6 +13,7 @@
 #include "nix/fetchers/fetch-settings.hh"
 #include "nix/util/json-utils.hh"
 #include "nix/util/archive.hh"
+#include "nix/util/memo.hh"
 #include "nix/util/mounted-source-accessor.hh"
 
 #include <sys/time.h>
@@ -20,8 +21,6 @@
 #ifndef _WIN32
 #  include <sys/wait.h>
 #endif
-
-using namespace std::string_literals;
 
 namespace nix::fetchers {
 
@@ -163,9 +162,16 @@ std::vector<PublicKey> getPublicKeys(const Attrs & attrs)
 
 static const Hash nullRev{HashAlgorithm::SHA1};
 
+static LazyAttr makeLazyAttr(fun<ResolvedAttr()> compute)
+{
+    return make_ref<LazyAttrComputation>(LazyAttrComputation{
+        .compute = memo<ResolvedAttr>(std::move(compute)),
+    });
+}
+
 struct GitInputScheme : InputScheme
 {
-    std::optional<Input> inputFromURL(const Settings & settings, const ParsedURL & url, bool requireTree) const override
+    std::optional<Input> inputFromURL(const ParsedURL & url, bool requireTree) const override
     {
         if (url.scheme != "git" && parseUrlScheme(url.scheme).application != "git")
             return {};
@@ -189,7 +195,7 @@ struct GitInputScheme : InputScheme
 
         attrs.emplace("url", url2.to_string());
 
-        return inputFromAttrs(settings, attrs);
+        return inputFromAttrs(attrs);
     }
 
     std::string_view schemeName() const override
@@ -376,7 +382,7 @@ struct GitInputScheme : InputScheme
         return attrs;
     }
 
-    std::optional<Input> inputFromAttrs(const Settings & settings, const Attrs & attrs) const override
+    std::optional<Input> inputFromAttrs(const Attrs & attrs) const override
     {
         for (auto & [name, _] : attrs)
             if (name == "verifyCommit" || name == "keytype" || name == "publicKey" || name == "publicKeys")
@@ -723,14 +729,12 @@ struct GitInputScheme : InputScheme
     }
 
     uint64_t getRevCount(
-        const Settings & settings,
-        const RepoInfo & repoInfo,
-        const std::filesystem::path & repoDir,
-        const Hash & rev) const
+        ref<Cache> cache, const RepoInfo & repoInfo, const std::filesystem::path & repoDir, const Hash & rev) const
     {
-        Cache::Key key{"gitRevCount", {{"rev", rev.gitRev()}}};
+        if (GitRepo::openRepo(repoDir, {})->isShallow())
+            throw Error("'%s' is a shallow Git repository, so 'revCount' is not available", repoInfo.locationToArg());
 
-        auto cache = settings.getCache();
+        Cache::Key key{"gitRevCount", {{"rev", rev.gitRev()}}};
 
         if (auto revCountAttrs = cache->lookup(key))
             return getIntAttr(*revCountAttrs, "revCount");
@@ -743,6 +747,18 @@ struct GitInputScheme : InputScheme
         cache->upsert(key, Attrs{{"revCount", revCount}});
 
         return revCount;
+    }
+
+    LazyAttr lazyRevCount(
+        const Settings & settings,
+        const RepoInfo & repoInfo,
+        const std::filesystem::path & repoDir,
+        const Hash & rev) const
+    {
+        auto cache = settings.getCache();
+        return makeLazyAttr([this, cache, repoInfo, repoDir, rev]() -> ResolvedAttr {
+            return getRevCount(cache, repoInfo, repoDir, rev);
+        });
     }
 
     std::string getDefaultRef(const Settings & settings, const RepoInfo & repoInfo, bool shallow) const
@@ -768,7 +784,7 @@ struct GitInputScheme : InputScheme
                     "\n"
                     "To make it visible to Nix, run:\n"
                     "\n"
-                    "git -C %2% add \"%1%\"",
+                    "git -C %2% add -N \"%1%\"",
                     path.rel(),
                     PathFmt(repoPath));
             else
@@ -891,13 +907,6 @@ struct GitInputScheme : InputScheme
 
         auto repo = GitRepo::openRepo(repoDir, {});
 
-        auto isShallow = repo->isShallow();
-
-        if (isShallow && !getShallowAttr(input))
-            throw Error(
-                "'%s' is a shallow Git repository, but shallow repositories are only allowed when `shallow = true;` is specified",
-                repoInfo.locationToArg());
-
         // FIXME: check whether rev is an ancestor of ref?
 
         auto rev = *input.getRev();
@@ -911,7 +920,7 @@ struct GitInputScheme : InputScheme
         if (!getShallowAttr(input)) {
             /* Like lastModified, skip revCount if supplied by the caller. */
             if (!input.attrs.contains("revCount"))
-                input.attrs.insert_or_assign("revCount", getRevCount(settings, repoInfo, repoDir, rev));
+                input.attrs.insert_or_assign("revCount", lazyRevCount(settings, repoInfo, repoDir, rev));
         }
 
         printTalkative("using revision %s of repo '%s'", rev.gitRev(), repoInfo.locationToArg());
@@ -956,7 +965,7 @@ struct GitInputScheme : InputScheme
                 attrs.insert_or_assign("submodules", Explicit<bool>{true});
                 attrs.insert_or_assign("lfs", Explicit<bool>{smudgeLfs});
                 attrs.insert_or_assign("allRefs", Explicit<bool>{true});
-                auto submoduleInput = fetchers::Input::fromAttrs(settings, std::move(attrs));
+                auto submoduleInput = fetchers::Input::fromAttrs(std::move(attrs));
                 auto [submoduleAccessor, submoduleInput2] = submoduleInput.getAccessor(settings, store);
                 submoduleAccessor->setPathDisplay("«" + submoduleInput.to_string() + "»");
                 mounts.insert_or_assign(submodule.path, submoduleAccessor);
@@ -1006,7 +1015,7 @@ struct GitInputScheme : InputScheme
                 // TODO: fall back to getAccessorFromCommit-like fetch when submodules aren't checked out
                 // attrs.insert_or_assign("allRefs", Explicit<bool>{ true });
 
-                auto submoduleInput = fetchers::Input::fromAttrs(settings, std::move(attrs));
+                auto submoduleInput = fetchers::Input::fromAttrs(std::move(attrs));
                 auto [submoduleAccessor, submoduleInput2] = submoduleInput.getAccessor(settings, store);
                 submoduleAccessor->setPathDisplay("«" + submoduleInput.to_string() + "»");
 
@@ -1033,8 +1042,11 @@ struct GitInputScheme : InputScheme
 
             input.attrs.insert_or_assign("rev", rev.gitRev());
             if (!getShallowAttr(input)) {
-                input.attrs.insert_or_assign(
-                    "revCount", rev == nullRev ? 0 : getRevCount(settings, repoInfo, repoPath, rev));
+                if (rev == nullRev) {
+                    input.attrs.insert_or_assign("revCount", uint64_t(0));
+                } else {
+                    input.attrs.insert_or_assign("revCount", lazyRevCount(settings, repoInfo, repoPath, rev));
+                }
             }
 
             verifyCommit(input, repo);

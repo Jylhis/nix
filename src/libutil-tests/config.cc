@@ -1,3 +1,4 @@
+#include "nix/util/config-global.hh"
 #include "nix/util/configuration.hh"
 
 #include <gtest/gtest.h>
@@ -303,6 +304,21 @@ TEST(Config, applyConfigWithReassignedSetting)
     config.getSettings(settings);
     ASSERT_FALSE(settings.empty());
     ASSERT_EQ(settings["name-of-the-setting"].value, "second-value");
+}
+
+/* A setting that is unknown when set (e.g. one a plugin registers later)
+   keeps the last value it was set to, as a known setting would. */
+TEST(GlobalConfig, reapplyUnknownSettingLastWriterWins)
+{
+    GlobalConfig config;
+    ASSERT_FALSE(config.set("late-registered-setting", "first"));
+    ASSERT_FALSE(config.set("late-registered-setting", "second"));
+
+    static Config lateConfig;
+    static Setting<std::string> setting{&lateConfig, "", "late-registered-setting", "description"};
+    static GlobalConfig::Register r(&lateConfig);
+    config.reapplyUnknownSettings();
+    ASSERT_EQ(setting.get(), "second");
 }
 
 TEST(Config, applyConfigFailsOnMissingIncludes)

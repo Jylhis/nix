@@ -18,7 +18,7 @@ bool GlobalConfig::set(const std::string & name, const std::string & value)
         if (config->set(name, value))
             return true;
 
-    unknownSettings.emplace(name, value);
+    unknownSettings.insert_or_assign(name, value);
 
     return false;
 }

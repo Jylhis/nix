@@ -78,6 +78,14 @@ public:
      */
     virtual std::optional<bool> isAppendSetting(const std::string & name) const;
 
+    /**
+     * With `deterministic-config-merge`, move plain assignments in
+     * `settings` ahead of `extra-` appends, keeping source order within
+     * each group, so an append lands on top of the base value regardless
+     * of line order. Does nothing without the feature.
+     */
+    void orderForMerge(std::vector<std::pair<std::string, std::string>> & settings) const;
+
     struct SettingInfo
     {
         std::string value;

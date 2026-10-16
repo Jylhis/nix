@@ -8,6 +8,8 @@
 
 #include "nix/util/config-impl.hh"
 
+#include <algorithm>
+
 #include <nlohmann/json.hpp>
 
 #include "nix/util/strings.hh"
@@ -96,6 +98,14 @@ void AbstractConfig::warnUnknownSettings()
 {
     for (const auto & s : unknownSettings)
         warn("unknown setting '%s'", s.first);
+}
+
+void AbstractConfig::orderForMerge(std::vector<std::pair<std::string, std::string>> & settings) const
+{
+    if (experimentalFeatureSettings.isEnabled(Xp::DeterministicConfigMerge))
+        std::stable_partition(settings.begin(), settings.end(), [&](const auto & s) {
+            return !isAppendSetting(s.first).value_or(false);
+        });
 }
 
 void AbstractConfig::reapplyUnknownSettings()
@@ -203,7 +213,11 @@ void AbstractConfig::applyConfig(const std::string & contents, const std::string
         if (name == "experimental-features" || name == "extra-experimental-features")
             set(name, value);
 
-    // Then apply other settings
+    /* Then apply other settings. With `deterministic-config-merge` (which the
+       loop above may just have enabled), plain assignments go before `extra-`
+       appends. */
+    orderForMerge(parsedContents);
+
     // XXX: NIX_PATH must override the regular setting! This is done in `initGC()`
     // Environment variables overriding settings should probably be part of the Config mechanism,
     // but at the time of writing it's not worth building that for just one thing

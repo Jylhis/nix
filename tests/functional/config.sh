@@ -86,3 +86,15 @@ EOF
 export NIX_USER_CONF_FILES=$TEST_ROOT/ordering-legacy.conf
 var=$(nix config show | grep '^allowed-uris =' | cut -d '=' -f 2 | xargs)
 [[ $var == https://base.example.com ]]
+
+# With the `deterministic-config-merge` experimental feature, plain assignments
+# are applied before `extra-` appends within a source, so the append lands on
+# top of the base value regardless of the order the two lines appear in.
+cat > "$TEST_ROOT/ordering-deterministic.conf" <<EOF
+experimental-features = nix-command deterministic-config-merge
+extra-allowed-uris = https://before.example.com
+allowed-uris = https://base.example.com
+EOF
+export NIX_USER_CONF_FILES=$TEST_ROOT/ordering-deterministic.conf
+var=$(nix config show | grep '^allowed-uris =' | cut -d '=' -f 2 | xargs)
+[[ $var == "https://base.example.com https://before.example.com" ]]

@@ -23,6 +23,15 @@ bool GlobalConfig::set(const std::string & name, const std::string & value)
     return false;
 }
 
+std::optional<bool> GlobalConfig::isAppendSetting(const std::string & name) const
+{
+    /* Answer for the first registration that knows `name`, as `set` does. */
+    for (auto & config : configRegistrations())
+        if (auto append = config->isAppendSetting(name))
+            return append;
+    return std::nullopt;
+}
+
 void GlobalConfig::getSettings(std::map<std::string, SettingInfo> & res, bool overriddenOnly) const
 {
     for (auto & config : configRegistrations())

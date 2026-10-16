@@ -3,6 +3,7 @@
 
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <set>
 
 #include <nlohmann/json_fwd.hpp>
@@ -69,6 +70,13 @@ public:
      * setting is known, false otherwise.
      */
     virtual bool set(const std::string & name, const std::string & value) = 0;
+
+    /**
+     * Whether `set(name, ...)` would append to an existing appendable
+     * setting via the `extra-` prefix (true) or assign (false). Returns
+     * `std::nullopt` if this config does not know `name`.
+     */
+    virtual std::optional<bool> isAppendSetting(const std::string & name) const;
 
     struct SettingInfo
     {
@@ -175,6 +183,8 @@ public:
     Config(StringMap initials = {});
 
     bool set(const std::string & name, const std::string & value) override;
+
+    std::optional<bool> isAppendSetting(const std::string & name) const override;
 
     void addSetting(AbstractSetting * setting);
 

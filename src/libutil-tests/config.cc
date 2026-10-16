@@ -306,6 +306,23 @@ TEST(Config, applyConfigWithReassignedSetting)
     ASSERT_EQ(settings["name-of-the-setting"].value, "second-value");
 }
 
+/* `isAppendSetting` distinguishes unknown names from assignments, so that
+   `GlobalConfig` can answer for the same registration `set` would use. */
+TEST(Config, isAppendSetting)
+{
+    Config config;
+    Setting<Strings> list{&config, {}, "list-setting", "description"};
+    Setting<std::string> str{&config, "", "string-setting", "description"};
+    Setting<Strings> extraThing{&config, {}, "extra-thing", "description"};
+    ASSERT_EQ(config.isAppendSetting("unknown-setting"), std::nullopt);
+    ASSERT_EQ(config.isAppendSetting("extra-unknown-setting"), std::nullopt);
+    ASSERT_EQ(config.isAppendSetting("list-setting"), false);
+    ASSERT_EQ(config.isAppendSetting("extra-list-setting"), true);
+    ASSERT_EQ(config.isAppendSetting("extra-string-setting"), std::nullopt);
+    ASSERT_EQ(config.isAppendSetting("extra-thing"), false);
+    ASSERT_EQ(config.isAppendSetting("extra-extra-thing"), true);
+}
+
 /* A setting that is unknown when set (e.g. one a plugin registers later)
    keeps the last value it was set to, as a known setting would. */
 TEST(GlobalConfig, reapplyUnknownSettingLastWriterWins)

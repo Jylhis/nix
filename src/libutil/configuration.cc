@@ -45,6 +45,19 @@ bool Config::set(const std::string & name, const std::string & value)
     return true;
 }
 
+std::optional<bool> AbstractConfig::isAppendSetting(const std::string &) const
+{
+    return std::nullopt;
+}
+
+std::optional<bool> Config::isAppendSetting(const std::string & name) const
+{
+    auto [setting, append] = lookupSetting(name);
+    if (!setting)
+        return std::nullopt;
+    return append;
+}
+
 void Config::addSetting(AbstractSetting * setting)
 {
     _settings.emplace(setting->name, Config::SettingData{false, setting});

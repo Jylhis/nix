@@ -163,6 +163,13 @@ private:
 
     Settings _settings;
 
+    /**
+     * Resolve `name` to the setting `set(name, ...)` would change, and
+     * whether that is an `extra-` append. Returns a null setting if
+     * `name` is unknown.
+     */
+    std::pair<AbstractSetting *, bool> lookupSetting(const std::string & name) const;
+
 public:
 
     Config(StringMap initials = {});

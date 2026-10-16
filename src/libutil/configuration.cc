@@ -25,21 +25,23 @@ Config::Config(StringMap initials)
 {
 }
 
+std::pair<AbstractSetting *, bool> Config::lookupSetting(const std::string & name) const
+{
+    if (auto i = _settings.find(name); i != _settings.end())
+        return {i->second.setting, false}; // exact match is an assignment, not an append
+    if (hasPrefix(name, "extra-"))
+        if (auto i = _settings.find(std::string(name, 6)); i != _settings.end() && i->second.setting->isAppendable())
+            return {i->second.setting, true};
+    return {nullptr, false};
+}
+
 bool Config::set(const std::string & name, const std::string & value)
 {
-    bool append = false;
-    auto i = _settings.find(name);
-    if (i == _settings.end()) {
-        if (hasPrefix(name, "extra-")) {
-            i = _settings.find(std::string(name, 6));
-            if (i == _settings.end() || !i->second.setting->isAppendable())
-                return false;
-            append = true;
-        } else
-            return false;
-    }
-    i->second.setting->set(value, append);
-    i->second.setting->overridden = true;
+    auto [setting, append] = lookupSetting(name);
+    if (!setting)
+        return false;
+    setting->set(value, append);
+    setting->overridden = true;
     return true;
 }
 

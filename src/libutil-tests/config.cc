@@ -306,6 +306,33 @@ TEST(Config, applyConfigWithReassignedSetting)
     ASSERT_EQ(settings["name-of-the-setting"].value, "second-value");
 }
 
+/* An `extra-` append that appears before its base assignment is discarded by
+   the later plain assignment. */
+TEST(Config, applyConfigExtraBeforeBaseLegacy)
+{
+    Config config;
+    std::map<std::string, Config::SettingInfo> settings;
+    Setting<Strings> setting{&config, {}, "list-setting", "description"};
+    config.applyConfig(
+        "extra-list-setting = b\n"
+        "list-setting = a\n");
+    config.getSettings(settings);
+    ASSERT_EQ(settings["list-setting"].value, "a");
+}
+
+/* An `extra-` append that appears after its base assignment appends. */
+TEST(Config, applyConfigExtraAfterBaseAppends)
+{
+    Config config;
+    std::map<std::string, Config::SettingInfo> settings;
+    Setting<Strings> setting{&config, {}, "list-setting", "description"};
+    config.applyConfig(
+        "list-setting = a\n"
+        "extra-list-setting = b\n");
+    config.getSettings(settings);
+    ASSERT_EQ(settings["list-setting"].value, "a b");
+}
+
 /* `isAppendSetting` distinguishes unknown names from assignments, so that
    `GlobalConfig` can answer for the same registration `set` would use. */
 TEST(Config, isAppendSetting)

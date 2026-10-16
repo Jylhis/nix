@@ -36,6 +36,7 @@ deps_private += gtest
 subdir('nix-meson-build-support/common')
 
 sources = files(
+  'config.cc',
   'flakeref.cc',
   'nix_api_flake.cc',
   'url-name.cc',

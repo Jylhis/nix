@@ -288,12 +288,14 @@ constexpr std::array<ExperimentalFeatureDetails, numXpFeatures> xpFeatureDetails
             Apply configuration settings order-independently within a source:
             all plain `<name> = ...` assignments are applied before any
             `extra-<name>` appends, so `extra-<name>` appends to the base value
-            regardless of line order. A source is a configuration file or the
-            `NIX_CONFIG` environment variable.
+            regardless of line order. A source is a configuration file, the
+            `NIX_CONFIG` environment variable, or a flake's `nixConfig`.
 
             Without this feature, an `extra-<name>` before its base `<name> =`
             assignment is silently discarded, because the later plain
-            assignment replaces the whole value.
+            assignment replaces the whole value. A flake's `nixConfig` is
+            applied in alphabetical order, so there `extra-<name>` always
+            comes first and is always discarded when `<name>` is also set.
 
             `experimental-features` and `extra-experimental-features`
             themselves are exempt: they are applied first, in source order,

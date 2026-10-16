@@ -35,13 +35,21 @@ static void applyFlakeConfig()
     configFile.apply(flakeSettings);
 }
 
-/* `nixConfig` is applied alphabetically, so `extra-<name>` is applied first
-   and discarded by the later `<name>` assignment. */
+/* `nixConfig` is applied alphabetically, so by default `extra-<name>` is
+   applied first and discarded by the later `<name>` assignment. */
 TEST(ConfigFile, applyExtraBeforeBaseLegacy)
 {
     auto & setting = flakeMergeTestSetting();
     applyFlakeConfig();
     ASSERT_EQ(setting.get(), Strings{"a"});
+}
+
+TEST(ConfigFile, applyExtraBeforeBaseDeterministic)
+{
+    EnableExperimentalFeature feature{"deterministic-config-merge"};
+    auto & setting = flakeMergeTestSetting();
+    applyFlakeConfig();
+    ASSERT_EQ(setting.get(), (Strings{"a", "b"}));
 }
 
 /* Says yes only when asked to allow `accept-flake-config`, and records every

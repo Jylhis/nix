@@ -62,7 +62,8 @@ void ConfigFile::apply(const Settings & flakeSettings)
 
     /* Ask about every setting first (in the order they are stored), then
        apply the accepted ones, so an accepted `accept-flake-config` does not
-       trust the settings after it. */
+       trust the settings after it, and so `deterministic-config-merge` can
+       order them. */
     std::vector<std::pair<std::string, std::string>> accepted;
 
     for (auto & [name, value] : settings) {
@@ -124,6 +125,7 @@ void ConfigFile::apply(const Settings & flakeSettings)
         accepted.emplace_back(name, std::move(valueS));
     }
 
+    globalConfig.orderForMerge(accepted);
     for (auto & [name, value] : accepted)
         globalConfig.set(name, value);
 }

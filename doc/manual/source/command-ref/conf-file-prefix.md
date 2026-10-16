@@ -65,9 +65,10 @@ defines the `substituters` setting to be `a b c d`.
 >
 > The [`deterministic-config-merge`](@docroot@/development/experimental-features.md#xp-feature-deterministic-config-merge)
 > experimental feature makes this order-independent, applying all plain
-> assignments in a source (a configuration file or `NIX_CONFIG`) before its
-> `extra-<name>` appends. The `experimental-features` setting itself stays
-> order-dependent, since it is what enables the feature.
+> assignments in a source (a configuration file, `NIX_CONFIG`, or a flake's
+> `nixConfig`) before its `extra-<name>` appends. The
+> `experimental-features` setting itself stays order-dependent, since it is
+> what enables the feature.
 
 Unknown option names are not an error, and are simply ignored with a warning.
 

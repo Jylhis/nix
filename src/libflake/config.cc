@@ -60,6 +60,11 @@ void ConfigFile::apply(const Settings & flakeSettings)
         "commit-lock-file-summary",
         "commit-lockfile-summary"};
 
+    /* Ask about every setting first (in the order they are stored), then
+       apply the accepted ones, so an accepted `accept-flake-config` does not
+       trust the settings after it. */
+    std::vector<std::pair<std::string, std::string>> accepted;
+
     for (auto & [name, value] : settings) {
 
         auto baseName = hasPrefix(name, "extra-") ? std::string(name, 6) : name;
@@ -116,8 +121,11 @@ void ConfigFile::apply(const Settings & flakeSettings)
             }
         }
 
-        globalConfig.set(name, valueS);
+        accepted.emplace_back(name, std::move(valueS));
     }
+
+    for (auto & [name, value] : accepted)
+        globalConfig.set(name, value);
 }
 
 } // namespace nix::flake

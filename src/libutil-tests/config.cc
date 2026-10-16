@@ -433,6 +433,23 @@ TEST(GlobalConfig, reapplyUnknownSettingLastWriterWins)
     ASSERT_EQ(setting.get(), "second");
 }
 
+/* Unknown settings are re-applied in name order, so `extra-<name>` comes
+   before `<name>`. With `deterministic-config-merge` the append still lands
+   on top of the base value. */
+TEST(GlobalConfig, reapplyUnknownSettingsDeterministic)
+{
+    EnableExperimentalFeature feature{"deterministic-config-merge"};
+    GlobalConfig config;
+    ASSERT_FALSE(config.set("late-registered-list", "a"));
+    ASSERT_FALSE(config.set("extra-late-registered-list", "b"));
+
+    static Config lateConfig;
+    static Setting<Strings> setting{&lateConfig, {}, "late-registered-list", "description"};
+    static GlobalConfig::Register r(&lateConfig);
+    config.reapplyUnknownSettings();
+    ASSERT_EQ(setting.get(), (Strings{"a", "b"}));
+}
+
 TEST(Config, applyConfigFailsOnMissingIncludes)
 {
     Config config;

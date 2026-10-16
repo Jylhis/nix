@@ -110,8 +110,10 @@ void AbstractConfig::orderForMerge(std::vector<std::pair<std::string, std::strin
 
 void AbstractConfig::reapplyUnknownSettings()
 {
-    auto unknownSettings2 = std::move(unknownSettings);
+    std::vector<std::pair<std::string, std::string>> unknownSettings2(
+        std::make_move_iterator(unknownSettings.begin()), std::make_move_iterator(unknownSettings.end()));
     unknownSettings = {};
+    orderForMerge(unknownSettings2);
     for (auto & s : unknownSettings2)
         set(s.first, s.second);
 }
